@@ -1,0 +1,6 @@
+{
+  "name": "Amman Billing & Accounting",
+  "description": "Offline-first GST billing and accounting web application for Indian small businesses with party management, inventory tracking, invoices, and financial reports.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
