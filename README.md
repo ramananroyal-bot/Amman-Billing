@@ -1,18 +1,14 @@
 # Amman Billing & Accounting (Vyapar GST Billing)
 
-A free, offline-first, desktop-grade GST billing and accounting web application inspired by Vyapar Desktop for small businesses, retailers, and distributors in India.
+An offline-first GST billing and accounting web & Windows desktop application for small businesses, retailers, and distributors in India.
 
 ## Features
 
-- **100% Offline-First Architecture**: All accounting records (parties, inventory, sales invoices, delivery challans, purchases, and settings) are stored locally on your device in the browser's IndexedDB (`VyaparGST_DB`). Zero cloud dependencies or vendor lock-in.
-- **Indian GST Compliance**: All 36 Indian States and Union Territories with official state codes. Auto-calculation of CGST, SGST, IGST, reverse charge (RCM), and composition scheme bills of supply.
-- **Invoicing & Print Templates**:
-  - Full A4 GST Tax Invoices with HSN/SAC summary breakdown, bank details, and dynamic UPI QR code.
-  - 3-inch (80mm) and 2-inch (58mm) POS Thermal receipts for retail billing.
-  - e-Way Bill NIC JSON export ready for the Government GST portal.
-- **Inventory & Barcodes**: Stock tracking, batch numbers, low-stock warnings, negative stock prevention, and custom barcode sticker label generator (single label & 24-label A4 sheets).
-- **Desktop Keyboard Shortcuts**: Accelerated desktop hotkeys (`F1` for cheatsheet, `Alt+S` Sale, `Alt+P` Purchase, `Alt+C` Challan, `Ctrl+K` Search, `Ctrl+Enter` Save in modals).
-- **Data Backup & Restore**: Full JSON database backup and merge/clean restore, snapshot rollbacks, transfer sync codes, and database health audit.
+- **100% Offline-First Architecture**: All accounting records (parties, inventory, invoices, challans, returns, payments, expenses, audit logs, and settings) are stored locally in IndexedDB (`VyaparGST_DB`). Multi-firm mode creates isolated databases per firm.
+- **Indian GST Compliance**: All 36 Indian States and Union Territories with official codes. Auto-calculation of CGST, SGST, IGST, RCM, composition bills of supply, GSTR-1 style reports, and NIC e-Way Bill JSON export.
+- **Full Voucher Suite**: Sale Invoices, Estimates/Quotations, Payment-In & Payment-Out with invoice allocation, Credit/Debit Notes, Delivery Challans, Job Work Out/In Challans, and Business Expenses.
+- **Invoicing, Barcodes & Print**: A4 GST Invoices with HSN/SAC summary and dynamic UPI payment QR code, 80mm/58mm POS thermal receipts, barcode lookup, batch/serial tracking, weight unit conversions (`GM`/`KG`/`QUINTAL`/`TONNE`), and English/Tamil bilingual printing.
+- **Security & Controls**: Startup & transaction PIN lock, dark mode, full Audit Trail, and v4.0 JSON Backup & Restore (backwards-compatible with older backups).
 
 ## Getting Started
 
@@ -21,40 +17,55 @@ A free, offline-first, desktop-grade GST billing and accounting web application 
 - Node.js 18+
 - npm 9+
 
-### Installation
+### Installation & Development
 
 ```bash
 npm install
-```
-
-### Development Server
-
-```bash
 npm run dev
 ```
 
-Open `http://localhost:3000` in your web browser.
+Open `http://localhost:3000` in your browser.
 
-### Production Build
+### Production Web Build
 
 ```bash
 npm run build
 ```
 
-The compiled static assets will be output to the `dist/` directory.
+Static production assets are output to `dist/`.
 
-### Desktop App Packaging (Windows)
+## Packaging Standalone Windows `.EXE` (Electron)
 
-The application includes Electron configuration for packaging as a standalone native Windows desktop application:
+Everything needed for native Windows desktop packaging is preconfigured (`electron/main.cjs`, `electron/preload.cjs`, `electron-builder.json`, `public/icon-512.png`, and `build-windows-exe.bat`).
 
-```bash
-# Package Windows NSIS installer
-npm run electron:build:win
+### One-Click Build on Windows
 
-# Package portable Windows executable (run from USB drive)
-npm run electron:build:portable
+Double-click **`build-windows-exe.bat`** in Windows Explorer, or run from Command Prompt / PowerShell:
+
+```bat
+build-windows-exe.bat
 ```
 
-## Data Storage
+### Manual CLI Commands
 
-All data is stored purely in the user's local browser via **IndexedDB** (`VyaparGST_DB`). To protect your data, always use the built-in **Backup & Restore** feature (`Alt + 7`) to export regular JSON backups to your local drive.
+```bash
+# Install Electron & Builder (first time on Windows build machine)
+npm install --no-save electron electron-builder
+
+# Build web bundle + NSIS Windows Setup Installer
+npm run electron:build:win
+
+# Build web bundle + Portable single-file EXE
+npm run electron:build:portable
+
+# Build both Setup Installer and Portable EXE together
+npm run electron:build:all
+```
+
+Generated executables appear inside `release/`:
+- `release/Amman-Billing-Setup-1.0.0.exe` (Windows Installer with Desktop & Start Menu shortcuts)
+- `release/Amman-Billing-1.0.0-portable.exe` (Portable executable)
+
+## Data Storage & Portability
+
+All data is stored locally in IndexedDB (and per Windows user inside `%APPDATA%\Amman Billing & Accounting` when running the `.exe`). Use **Sync, Share & Backup (`Alt + 7`)** to export regular v4.0 JSON backups and transfer data between browser and `.exe`.

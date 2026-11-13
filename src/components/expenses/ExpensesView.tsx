@@ -23,6 +23,7 @@ import {
 import { formatINR, formatDate } from '../../utils/formatters';
 import { ConfirmDeleteModal } from '../common/ConfirmDeleteModal';
 import { useToast } from '../common/Toast';
+import { useSecurity } from '../../contexts/SecurityContext';
 
 interface ExpensesViewProps {
   onOpenAddExpense: () => void;
@@ -54,6 +55,7 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
   const [newCatName, setNewCatName] = useState('');
 
   const { showToast } = useToast();
+  const { requirePin } = useSecurity();
 
   const loadData = async () => {
     setIsLoading(true);
@@ -364,7 +366,11 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
                       <div className="flex items-center justify-center gap-1.5">
                         <button
                           type="button"
-                          onClick={() => onEditExpense(e)}
+                          onClick={async () => {
+                            if (await requirePin(`Enter PIN to edit ${e.expenseNo}`)) {
+                              onEditExpense(e);
+                            }
+                          }}
                           title="Edit Expense"
                           className="p-1 text-blue-600 hover:text-blue-800 hover:bg-blue-50 rounded-md transition-colors cursor-pointer"
                         >
@@ -372,7 +378,11 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
                         </button>
                         <button
                           type="button"
-                          onClick={() => setExpenseToDelete(e)}
+                          onClick={async () => {
+                            if (await requirePin(`Enter PIN to delete ${e.expenseNo}`)) {
+                              setExpenseToDelete(e);
+                            }
+                          }}
                           title="Delete Expense"
                           className="p-1 text-rose-500 hover:text-rose-700 hover:bg-rose-50 rounded-md transition-colors cursor-pointer"
                         >

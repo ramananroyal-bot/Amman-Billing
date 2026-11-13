@@ -14,12 +14,20 @@ import {
   Trash2,
   Eye,
   FileText,
+  Clock,
+  AlertTriangle,
+  MessageSquare,
+  Package,
 } from 'lucide-react';
-import { DashboardMetrics, FilterPeriod, Transaction } from '../../types';
+import { AppSettings, BusinessProfile, DashboardMetrics, FilterPeriod, OverdueInvoiceInfo, Transaction } from '../../types';
 import { formatINR, formatDate } from '../../utils/formatters';
+import { getAppSettings } from '../../db/indexedDB';
+import { useTranslation } from '../../i18n/LanguageContext';
+import { useToast } from '../common/Toast';
 
 interface HomeViewProps {
   metrics: DashboardMetrics;
+  businessProfile?: BusinessProfile | null;
   selectedPeriod: FilterPeriod;
   onPeriodChange: (period: FilterPeriod) => void;
   onOpenAddSale: () => void;
@@ -28,10 +36,12 @@ interface HomeViewProps {
   onCancelTransaction: (tx: Transaction) => void;
   onDeleteTransaction: (tx: Transaction) => void;
   onOpenReport: (reportType: string) => void;
+  onNavigateToItems?: () => void;
 }
 
 export const HomeView: React.FC<HomeViewProps> = ({
   metrics,
+  businessProfile,
   selectedPeriod,
   onPeriodChange,
   onOpenAddSale,
@@ -40,8 +50,16 @@ export const HomeView: React.FC<HomeViewProps> = ({
   onCancelTransaction,
   onDeleteTransaction,
   onOpenReport,
+  onNavigateToItems,
 }) => {
+  const { t } = useTranslation();
+  const { showToast } = useToast();
   const [activeMenuTxId, setActiveMenuTxId] = useState<string | null>(null);
+  const [appSettings, setAppSettings] = useState<AppSettings | null>(null);
+
+  React.useEffect(() => {
+    getAppSettings().then(setAppSettings).catch(() => {});
+  }, []);
 
   // Toggle 3-dot action menu
   const toggleMenu = (e: React.MouseEvent, id: string) => {
@@ -55,6 +73,39 @@ export const HomeView: React.FC<HomeViewProps> = ({
     window.addEventListener('click', handleClickOutside);
     return () => window.removeEventListener('click', handleClickOutside);
   }, []);
+
+  // Open WhatsApp Web/App prefilled from the Settings > Party template
+  const handleSendOverdueReminder = (item: OverdueInvoiceInfo) => {
+    const cleanPhone = (item.partyPhone || '').replace(/\D/g, '');
+    if (!cleanPhone) {
+      showToast(`No phone number saved for ${item.partyName}. Please add a phone number in Parties.`, 'info');
+      return;
+    }
+    const phone = cleanPhone.length === 10 ? `91${cleanPhone}` : cleanPhone;
+    const defaultTemplate =
+      'Dear [Party_Name], gentle reminder from [Firm_Name]: Invoice [Invoice_Number] (Balance: [Transaction_Balance]) was due on [Due_Date]. Please arrange payment. Thank you!';
+    const template = appSettings?.whatsappMessageTemplate || defaultTemplate;
+
+    const firmName = businessProfile?.businessName || 'Our Firm';
+    const balanceText = formatINR(item.balanceDue);
+    const dueDateText = formatDate(item.dueDate);
+
+    const populated = template
+      .replace(/\[Firm_Name\]/gi, firmName)
+      .replace(/\[Party_Name\]/gi, item.partyName)
+      .replace(/\[Transaction_Balance\]/gi, balanceText)
+      .replace(/\[Balance_Due\]/gi, balanceText)
+      .replace(/\[Due_Date\]/gi, dueDateText)
+      .replace(/\[Invoice_Number\]/gi, item.invoiceNo)
+      .replace(/\[Transaction_Amount\]/gi, formatINR(item.totalAmount));
+
+    const url = `https://wa.me/${phone}?text=${encodeURIComponent(populated)}`;
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.target = '_blank';
+    anchor.rel = 'noopener noreferrer';
+    anchor.click();
+  };
 
   // Compute chart max for SVG scaling
   const maxSaleAmount = Math.max(
@@ -70,7 +121,7 @@ export const HomeView: React.FC<HomeViewProps> = ({
         <div className="bg-white rounded-xl p-5 border border-slate-200 shadow-2xs hover:shadow-xs transition-shadow">
           <div className="flex items-center justify-between">
             <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
-              Total Receivable
+              {t('home.totalReceivable')}
             </span>
             <div className="w-8 h-8 rounded-lg bg-emerald-50 flex items-center justify-center text-emerald-600">
               <ArrowDownLeft className="w-4 h-4" />
@@ -81,7 +132,7 @@ export const HomeView: React.FC<HomeViewProps> = ({
               {formatINR(metrics.totalReceivable)}
             </div>
             <p className="mt-1 text-xs text-slate-400">
-              From unpaid sales & customer opening balances
+              {t('home.totalReceivableSub')}
             </p>
           </div>
         </div>
@@ -90,7 +141,7 @@ export const HomeView: React.FC<HomeViewProps> = ({
         <div className="bg-white rounded-xl p-5 border border-slate-200 shadow-2xs hover:shadow-xs transition-shadow">
           <div className="flex items-center justify-between">
             <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
-              Total Payable
+              {t('home.totalPayable')}
             </span>
             <div className="w-8 h-8 rounded-lg bg-rose-50 flex items-center justify-center text-rose-600">
               <ArrowUpRight className="w-4 h-4" />
@@ -101,7 +152,7 @@ export const HomeView: React.FC<HomeViewProps> = ({
               {formatINR(metrics.totalPayable)}
             </div>
             <p className="mt-1 text-xs text-slate-400">
-              To suppliers for unpaid purchase bills
+              {t('home.totalPayableSub')}
             </p>
           </div>
         </div>
@@ -110,7 +161,7 @@ export const HomeView: React.FC<HomeViewProps> = ({
         <div className="bg-white rounded-xl p-5 border border-slate-200 shadow-2xs hover:shadow-xs transition-shadow">
           <div className="flex items-center justify-between">
             <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
-              Total Sales
+              {t('home.totalSales')}
             </span>
             <div className="w-8 h-8 rounded-lg bg-blue-50 flex items-center justify-center text-blue-600">
               <TrendingUp className="w-4 h-4" />
@@ -152,7 +203,7 @@ export const HomeView: React.FC<HomeViewProps> = ({
               </div>
               <div>
                 <h3 className="text-sm font-bold text-white tracking-tight">
-                  Net Profit & Loss ({metrics.period.replace('_', ' ')})
+                  {t('home.netProfitLoss')} ({metrics.period.replace('_', ' ')})
                 </h3>
                 <p className="text-[11px] text-slate-400">
                   Formula: Profit = Sales ({formatINR(metrics.totalSale)}) - Purchases ({formatINR(metrics.totalPurchase || 0)}) - Expenses ({formatINR(metrics.totalExpenses || 0)})
@@ -164,25 +215,25 @@ export const HomeView: React.FC<HomeViewProps> = ({
               onClick={() => onOpenReport('profit_loss')}
               className="text-xs text-rose-400 hover:text-rose-300 font-medium transition-colors cursor-pointer self-start sm:self-center"
             >
-              View Detailed P&L &rarr;
+              {t('home.viewDetailedPL')} &rarr;
             </button>
           </div>
 
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mt-4">
             <div>
-              <span className="text-[10px] uppercase tracking-wider text-slate-400 font-semibold block">Sales Revenue (+)</span>
+              <span className="text-[10px] uppercase tracking-wider text-slate-400 font-semibold block">{t('home.salesRevenue')}</span>
               <div className="text-lg font-bold font-mono text-emerald-400 mt-0.5">{formatINR(metrics.totalSale)}</div>
             </div>
             <div>
-              <span className="text-[10px] uppercase tracking-wider text-slate-400 font-semibold block">Purchases (-)</span>
+              <span className="text-[10px] uppercase tracking-wider text-slate-400 font-semibold block">{t('home.purchases')}</span>
               <div className="text-lg font-bold font-mono text-blue-400 mt-0.5">{formatINR(metrics.totalPurchase || 0)}</div>
             </div>
             <div>
-              <span className="text-[10px] uppercase tracking-wider text-slate-400 font-semibold block">Expenses (-)</span>
+              <span className="text-[10px] uppercase tracking-wider text-slate-400 font-semibold block">{t('home.expenses')}</span>
               <div className="text-lg font-bold font-mono text-amber-400 mt-0.5">{formatINR(metrics.totalExpenses || 0)}</div>
             </div>
             <div>
-              <span className="text-[10px] uppercase tracking-wider text-slate-400 font-semibold block">Net Profit</span>
+              <span className="text-[10px] uppercase tracking-wider text-slate-400 font-semibold block">{t('home.netProfit')}</span>
               <div className={`text-xl font-bold font-mono mt-0.5 ${metrics.netProfit >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
                 {formatINR(metrics.netProfit)}
               </div>
@@ -191,11 +242,138 @@ export const HomeView: React.FC<HomeViewProps> = ({
         </div>
       )}
 
+      {/* Actionable Alerts Grid: Overdue Payments + Low Stock Items */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+        {/* Overdue Payments Card */}
+        <div className="bg-white rounded-xl border border-slate-200 shadow-2xs overflow-hidden flex flex-col">
+          <div className="px-5 py-3.5 border-b border-slate-100 flex items-center justify-between bg-amber-50/40">
+            <div className="flex items-center gap-2.5">
+              <div className="w-8 h-8 rounded-lg bg-amber-100 text-amber-700 flex items-center justify-center shrink-0">
+                <Clock className="w-4 h-4" />
+              </div>
+              <div>
+                <h3 className="text-sm font-bold text-slate-900">{t('home.overduePayments')}</h3>
+                <p className="text-[11px] text-slate-500">{t('home.overduePaymentsSub')}</p>
+              </div>
+            </div>
+            {(metrics.overduePayments?.length || 0) > 0 && (
+              <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-amber-100 text-amber-800 border border-amber-200">
+                {metrics.overduePayments?.length}
+              </span>
+            )}
+          </div>
+
+          <div className="divide-y divide-slate-100 max-h-72 overflow-y-auto flex-1">
+            {metrics.overduePayments && metrics.overduePayments.length > 0 ? (
+              metrics.overduePayments.slice(0, 10).map((ov) => (
+                <div
+                  key={ov.transactionId}
+                  className="px-5 py-3 flex items-center justify-between gap-3 hover:bg-slate-50 transition-colors"
+                >
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-bold text-slate-900 truncate">{ov.partyName}</span>
+                      <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-rose-100 text-rose-700 shrink-0">
+                        {ov.daysOverdue} {t('home.daysOverdue')}
+                      </span>
+                    </div>
+                    <div className="text-[11px] text-slate-500 font-mono mt-0.5">
+                      {ov.invoiceNo} · {t('home.dueDate')}: {formatDate(ov.dueDate)}
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-3 shrink-0">
+                    <div className="text-right font-mono">
+                      <div className="text-xs font-bold text-rose-700 tabular-nums">
+                        {formatINR(ov.balanceDue)}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => handleSendOverdueReminder(ov)}
+                      title={t('home.sendReminder')}
+                      className="px-2.5 py-1.5 text-[11px] font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg shadow-2xs flex items-center gap-1 transition-colors cursor-pointer"
+                    >
+                      <MessageSquare className="w-3 h-3" />
+                      <span className="hidden sm:inline">{t('home.sendReminder')}</span>
+                    </button>
+                  </div>
+                </div>
+              ))
+            ) : (
+              <div className="py-10 px-4 text-center text-xs text-slate-400">
+                {t('home.noOverduePayments')}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Low Stock Items Card */}
+        <div className="bg-white rounded-xl border border-slate-200 shadow-2xs overflow-hidden flex flex-col">
+          <div className="px-5 py-3.5 border-b border-slate-100 flex items-center justify-between bg-rose-50/40">
+            <div className="flex items-center gap-2.5">
+              <div className="w-8 h-8 rounded-lg bg-rose-100 text-rose-700 flex items-center justify-center shrink-0">
+                <AlertTriangle className="w-4 h-4" />
+              </div>
+              <div>
+                <h3 className="text-sm font-bold text-slate-900">{t('home.lowStockItems')}</h3>
+                <p className="text-[11px] text-slate-500">{t('home.lowStockSub')}</p>
+              </div>
+            </div>
+            {(metrics.lowStockItems?.length || 0) > 0 && (
+              <button
+                type="button"
+                onClick={onNavigateToItems}
+                className="px-2.5 py-1 text-[11px] font-semibold text-rose-700 bg-rose-100 hover:bg-rose-200 rounded-full border border-rose-200 cursor-pointer"
+              >
+                {metrics.lowStockItems?.length} Alerts &rarr;
+              </button>
+            )}
+          </div>
+
+          <div className="divide-y divide-slate-100 max-h-72 overflow-y-auto flex-1">
+            {metrics.lowStockItems && metrics.lowStockItems.length > 0 ? (
+              metrics.lowStockItems.slice(0, 10).map((item) => (
+                <div
+                  key={item.id}
+                  onClick={onNavigateToItems}
+                  className="px-5 py-3 flex items-center justify-between gap-3 hover:bg-slate-50 transition-colors cursor-pointer"
+                >
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <Package className="w-4 h-4 text-slate-400 shrink-0" />
+                    <div className="min-w-0">
+                      <div className="text-xs font-bold text-slate-900 truncate">{item.name}</div>
+                      <div className="text-[11px] text-slate-500 font-mono">
+                        {item.hsn ? `HSN: ${item.hsn}` : item.category || 'Product'} · {t('home.minAlert')}: {item.minStockAlert} {item.unit}
+                      </div>
+                    </div>
+                  </div>
+
+                  <span
+                    className={`px-2 py-0.5 rounded-full text-[11px] font-bold font-mono shrink-0 ${
+                      item.currentStock <= 0
+                        ? 'bg-rose-100 text-rose-700 border border-rose-200'
+                        : 'bg-amber-100 text-amber-800 border border-amber-200'
+                    }`}
+                  >
+                    {item.currentStock} {item.unit}
+                  </span>
+                </div>
+              ))
+            ) : (
+              <div className="py-10 px-4 text-center text-xs text-slate-400">
+                {t('home.noLowStock')}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
       {/* Total Sale Chart Section with "This Month" filter */}
       <div className="bg-white rounded-xl p-5 sm:p-6 border border-slate-200 shadow-2xs">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-100">
           <div>
-            <h2 className="text-base font-bold text-slate-900">Total Sale Timeline</h2>
+            <h2 className="text-base font-bold text-slate-900">{t('home.totalSaleTimeline')}</h2>
             <p className="text-xs text-slate-500 mt-0.5">
               Calculated dynamically from confirmed active GST sale invoices
             </p>
@@ -285,7 +463,7 @@ export const HomeView: React.FC<HomeViewProps> = ({
       {/* Most Used Reports */}
       <div>
         <h3 className="text-sm font-bold text-slate-900 uppercase tracking-wider mb-3">
-          Most Used Reports
+          {t('home.mostUsedReports')}
         </h3>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           <button
@@ -296,7 +474,7 @@ export const HomeView: React.FC<HomeViewProps> = ({
             <div className="w-9 h-9 rounded-lg bg-rose-50 group-hover:bg-rose-100 text-rose-600 flex items-center justify-center transition-colors mb-2.5">
               <FileSpreadsheet className="w-4 h-4" />
             </div>
-            <h4 className="text-xs font-bold text-slate-900">Sale Report</h4>
+            <h4 className="text-xs font-bold text-slate-900">{t('home.saleReport')}</h4>
             <p className="text-[11px] text-slate-500 mt-0.5">Itemized sales & GST tax collected</p>
           </button>
 
@@ -308,7 +486,7 @@ export const HomeView: React.FC<HomeViewProps> = ({
             <div className="w-9 h-9 rounded-lg bg-blue-50 group-hover:bg-blue-100 text-blue-600 flex items-center justify-center transition-colors mb-2.5">
               <BookOpen className="w-4 h-4" />
             </div>
-            <h4 className="text-xs font-bold text-slate-900">All Transactions</h4>
+            <h4 className="text-xs font-bold text-slate-900">{t('home.allTransactions')}</h4>
             <p className="text-[11px] text-slate-500 mt-0.5">Combined sales, purchases & returns</p>
           </button>
 
@@ -320,7 +498,7 @@ export const HomeView: React.FC<HomeViewProps> = ({
             <div className="w-9 h-9 rounded-lg bg-amber-50 group-hover:bg-amber-100 text-amber-600 flex items-center justify-center transition-colors mb-2.5">
               <Calendar className="w-4 h-4" />
             </div>
-            <h4 className="text-xs font-bold text-slate-900">Daybook</h4>
+            <h4 className="text-xs font-bold text-slate-900">{t('home.daybook')}</h4>
             <p className="text-[11px] text-slate-500 mt-0.5">Today&apos;s chronological ins and outs</p>
           </button>
 
@@ -332,7 +510,7 @@ export const HomeView: React.FC<HomeViewProps> = ({
             <div className="w-9 h-9 rounded-lg bg-emerald-50 group-hover:bg-emerald-100 text-emerald-600 flex items-center justify-center transition-colors mb-2.5">
               <Users className="w-4 h-4" />
             </div>
-            <h4 className="text-xs font-bold text-slate-900">Party Statement</h4>
+            <h4 className="text-xs font-bold text-slate-900">{t('home.partyStatement')}</h4>
             <p className="text-[11px] text-slate-500 mt-0.5">Customer & supplier ledgers with balances</p>
           </button>
         </div>
@@ -342,7 +520,7 @@ export const HomeView: React.FC<HomeViewProps> = ({
       <div className="bg-white rounded-xl border border-slate-200 shadow-2xs overflow-hidden">
         <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between">
           <div>
-            <h3 className="text-sm font-bold text-slate-900">Recent Transactions</h3>
+            <h3 className="text-sm font-bold text-slate-900">{t('home.recentTransactions')}</h3>
             <p className="text-xs text-slate-500 mt-0.5">
               All transactions automatically maintain stock & receivable / payable balances
             </p>

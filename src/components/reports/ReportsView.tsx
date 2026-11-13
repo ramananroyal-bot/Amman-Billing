@@ -20,12 +20,23 @@ import {
   FileCheck,
   AlertTriangle,
   RotateCcw,
+  Activity,
+  Trash2,
 } from 'lucide-react';
-import { BusinessProfile, Item, Party, Transaction, Expense } from '../../types';
-import { getTransactions, getParties, getItems, calculatePartyBalance, getExpenses } from '../../db/indexedDB';
+import { AuditLogEntry, BusinessProfile, Item, Party, Transaction, Expense } from '../../types';
+import {
+  getTransactions,
+  getParties,
+  getItems,
+  calculatePartyBalance,
+  getExpenses,
+  getAuditLogs,
+  clearAuditLogs,
+} from '../../db/indexedDB';
 import { formatINR, formatDate, getTodayISO } from '../../utils/formatters';
+import { useSecurity } from '../../contexts/SecurityContext';
 
-export type ReportCategory = 'transactions' | 'gst' | 'parties' | 'inventory';
+export type ReportCategory = 'transactions' | 'gst' | 'parties' | 'inventory' | 'security';
 
 export type ReportType =
   | 'sale_report'
@@ -40,7 +51,8 @@ export type ReportType =
   | 'parties_balance'
   | 'stock_summary'
   | 'low_stock'
-  | 'item_sales';
+  | 'item_sales'
+  | 'audit_trail';
 
 interface ReportsViewProps {
   businessProfile: BusinessProfile | null;
@@ -61,15 +73,31 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
   initialReportType = 'sale_report',
   onViewTransaction,
 }) => {
+  const { requirePin } = useSecurity();
   const [activeReport, setActiveReport] = useState<ReportType>(initialReportType);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [parties, setParties] = useState<Party[]>([]);
   const [items, setItems] = useState<Item[]>([]);
   const [expenses, setExpenses] = useState<Expense[]>([]);
+  const [auditLogs, setAuditLogs] = useState<AuditLogEntry[]>([]);
   const [partyBalances, setPartyBalances] = useState<Record<string, { balance: number; type: 'to_receive' | 'to_pay' }>>({});
 
   // Filters
-  const [datePreset, setDatePreset] = useState<'today' | 'this_week' | 'this_month' | 'this_quarter' | 'this_year' | 'all' | 'custom'>('this_month');
+  const [datePreset, setDatePreset] = useState<
+    'today' | 'this_week' | 'this_month' | 'this_quarter' | 'by_month' | 'by_quarter' | 'this_year' | 'all' | 'custom'
+  >('this_month');
+  const [selectedMonth, setSelectedMonth] = useState(() => new Date().toISOString().slice(0, 7));
+  const [selectedQuarterFY, setSelectedQuarterFY] = useState(() => {
+    const now = new Date();
+    return now.getMonth() >= 3 ? now.getFullYear() : now.getFullYear() - 1;
+  });
+  const [selectedQuarterNum, setSelectedQuarterNum] = useState<'Q1' | 'Q2' | 'Q3' | 'Q4'>(() => {
+    const m = new Date().getMonth();
+    if (m >= 3 && m <= 5) return 'Q1';
+    if (m >= 6 && m <= 8) return 'Q2';
+    if (m >= 9 && m <= 11) return 'Q3';
+    return 'Q4';
+  });
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [selectedPartyId, setSelectedPartyId] = useState<string>('all');
@@ -107,6 +135,9 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
     const exps = await getExpenses();
     setExpenses(exps);
 
+    const logs = await getAuditLogs();
+    setAuditLogs(logs);
+
     // Compute party balances
     const bMap: Record<string, { balance: number; type: 'to_receive' | 'to_pay' }> = {};
     for (const p of pts) {
@@ -138,6 +169,22 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
       const start = new Date(now.getFullYear(), qMonth, 1).toISOString().split('T')[0];
       return { start, end: todayStr };
     }
+    if (datePreset === 'by_month' && selectedMonth) {
+      const [y, m] = selectedMonth.split('-').map(Number);
+      if (y && m) {
+        const start = `${y}-${String(m).padStart(2, '0')}-01`;
+        const lastDay = new Date(y, m, 0).getDate();
+        const end = `${y}-${String(m).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`;
+        return { start, end };
+      }
+    }
+    if (datePreset === 'by_quarter') {
+      const fy = selectedQuarterFY;
+      if (selectedQuarterNum === 'Q1') return { start: `${fy}-04-01`, end: `${fy}-06-30` };
+      if (selectedQuarterNum === 'Q2') return { start: `${fy}-07-01`, end: `${fy}-09-30` };
+      if (selectedQuarterNum === 'Q3') return { start: `${fy}-10-01`, end: `${fy}-12-31` };
+      return { start: `${fy + 1}-01-01`, end: `${fy + 1}-03-31` };
+    }
     if (datePreset === 'this_year') {
       // Indian Financial Year: April 1 to March 31
       const curYear = now.getFullYear();
@@ -149,7 +196,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
       return { start: startDate, end: endDate };
     }
     return { start: '2000-01-01', end: '2099-12-31' };
-  }, [datePreset, startDate, endDate]);
+  }, [datePreset, startDate, endDate, selectedMonth, selectedQuarterFY, selectedQuarterNum]);
 
   // Filtered transactions for the selected date range & filters
   const filteredTxs = useMemo(() => {
@@ -213,6 +260,9 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
     { id: 'stock_summary', name: 'Stock Summary', category: 'inventory', description: 'Inventory valuation, opening, inwards, outwards & closing stock' },
     { id: 'low_stock', name: 'Low Stock Alert', category: 'inventory', description: 'Items at or below reorder threshold' },
     { id: 'item_sales', name: 'Item-wise Sales', category: 'inventory', description: 'Units sold, sales revenue & product performance' },
+
+    // Security & Audit
+    { id: 'audit_trail', name: 'Audit Trail Log', category: 'security', description: 'Chronological log of all create, edit, cancel, convert, and delete actions', badge: 'LOG' },
   ];
 
   // Export CSV
@@ -261,6 +311,92 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
         });
         break;
       }
+      case 'gstr1': {
+        const sales = filteredTxs.filter((t) => t.type === 'sale_invoice');
+        const creditNotes = filteredTxs.filter((t) => t.type === 'sale_return');
+        const lines: string[] = [];
+        lines.push('SECTION: 4A B2B REGISTERED INVOICES');
+        lines.push('Date,Invoice No,Party GSTIN,Party Name,Place of Supply,Taxable Value,CGST,SGST,IGST,Invoice Total');
+        sales
+          .filter((t) => t.partyGstin && t.partyGstin.trim().length === 15)
+          .forEach((t) => {
+            lines.push(`"${t.date}","${t.invoiceNo}","${t.partyGstin}","${t.partyName}","${t.stateOfSupply}",${t.subtotal},${t.cgst},${t.sgst},${t.igst},${t.totalAmount}`);
+          });
+
+        lines.push('');
+        lines.push('SECTION: 5 B2C LARGE (INTER-STATE > 2.5L)');
+        lines.push('Date,Invoice No,Party Name,Place of Supply,Taxable Value,IGST,Invoice Total');
+        sales
+          .filter((t) => (!t.partyGstin || t.partyGstin.trim().length !== 15) && t.igst > 0 && t.totalAmount > 250000)
+          .forEach((t) => {
+            lines.push(`"${t.date}","${t.invoiceNo}","${t.partyName}","${t.stateOfSupply}",${t.subtotal},${t.igst},${t.totalAmount}`);
+          });
+
+        lines.push('');
+        lines.push('SECTION: 7 B2C SMALL SUMMARY');
+        lines.push('Date,Invoice No,Party Name,Place of Supply,Taxable Value,CGST,SGST,IGST,Invoice Total');
+        sales
+          .filter((t) => (!t.partyGstin || t.partyGstin.trim().length !== 15) && !(t.igst > 0 && t.totalAmount > 250000))
+          .forEach((t) => {
+            lines.push(`"${t.date}","${t.invoiceNo}","${t.partyName}","${t.stateOfSupply}",${t.subtotal},${t.cgst},${t.sgst},${t.igst},${t.totalAmount}`);
+          });
+
+        lines.push('');
+        lines.push('SECTION: 9B CREDIT NOTES (SALE RETURNS)');
+        lines.push('Date,Credit Note No,Original Invoice,Party GSTIN,Party Name,Taxable Reversed,CGST,SGST,IGST,Total Reversed');
+        creditNotes.forEach((t) => {
+          lines.push(`"${t.date}","${t.invoiceNo}","${t.originalInvoiceNo || ''}","${t.partyGstin || 'URP'}","${t.partyName}",${t.subtotal},${t.cgst},${t.sgst},${t.igst},${t.totalAmount}`);
+        });
+
+        lines.push('');
+        lines.push('SECTION: 12 HSN-WISE SUMMARY');
+        lines.push('HSN Code,Description,UQC,Total Qty,Taxable Value,CGST,SGST,IGST,Total Tax');
+        const hsnExportMap = new Map<string, { desc: string; uqc: string; qty: number; taxable: number; cgst: number; sgst: number; igst: number; tax: number }>();
+        for (const s of sales) {
+          const inter = s.igst > 0;
+          for (const it of s.items) {
+            const k = it.hsn || 'NON-HSN';
+            const prev = hsnExportMap.get(k) || { desc: it.name, uqc: it.unit || 'PCS', qty: 0, taxable: 0, cgst: 0, sgst: 0, igst: 0, tax: 0 };
+            const tAmt = it.taxAmount || 0;
+            prev.qty += it.qty || 0;
+            prev.taxable += (it.totalAmount || 0) - tAmt;
+            prev.tax += tAmt;
+            if (inter) prev.igst += tAmt;
+            else {
+              prev.cgst += tAmt / 2;
+              prev.sgst += tAmt / 2;
+            }
+            hsnExportMap.set(k, prev);
+          }
+        }
+        hsnExportMap.forEach((v, k) => {
+          lines.push(`"${k}","${v.desc}","${v.uqc}",${v.qty},${v.taxable.toFixed(2)},${v.cgst.toFixed(2)},${v.sgst.toFixed(2)},${v.igst.toFixed(2)},${v.tax.toFixed(2)}`);
+        });
+
+        csv = lines.join('\n');
+        break;
+      }
+      case 'gstr2': {
+        csv = 'Date,Type,Bill / Debit Note No,Supplier GSTIN,Supplier Name,Taxable Value,CGST,SGST,IGST,Eligible ITC\n';
+        filteredTxs
+          .filter((t) => t.type === 'purchase_bill' || t.type === 'purchase_return')
+          .forEach((t) => {
+            const sign = t.type === 'purchase_return' ? -1 : 1;
+            csv += `"${t.date}","${t.type === 'purchase_return' ? 'Debit Note' : 'Purchase Bill'}","${t.invoiceNo}","${
+              t.partyGstin || 'Unregistered'
+            }","${t.partyName}",${sign * t.subtotal},${sign * (t.cgst || 0)},${sign * (t.sgst || 0)},${sign * (t.igst || 0)},${
+              sign * t.totalTax
+            }\n`;
+          });
+        break;
+      }
+      case 'audit_trail': {
+        csv = 'Timestamp,Action,Entity Type,Entity Label,Actor,Details\n';
+        auditLogs.forEach((l) => {
+          csv += `"${l.timestamp}","${l.action}","${l.entityType}","${l.entityLabel.replace(/"/g, '""')}","${l.actor}","${l.details.replace(/"/g, '""')}"\n`;
+        });
+        break;
+      }
       default: {
         csv = 'Date,Reference,Party,Amount\n';
         filteredTxs.forEach((t) => {
@@ -270,7 +406,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
       }
     }
 
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
@@ -408,6 +544,36 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
                 ))}
             </div>
           </div>
+
+          {/* 5. Security & Audit */}
+          <div>
+            <span className="px-2 text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1">
+              Security &amp; Audit
+            </span>
+            <div className="space-y-0.5">
+              {reportNavItems
+                .filter((r) => r.category === 'security')
+                .map((r) => (
+                  <button
+                    key={r.id}
+                    type="button"
+                    onClick={() => setActiveReport(r.id)}
+                    className={`w-full px-2.5 py-2 text-left rounded-lg text-xs transition-colors flex items-center justify-between cursor-pointer ${
+                      activeReport === r.id
+                        ? 'bg-rose-50 text-rose-700 font-bold border border-rose-200/80 shadow-2xs'
+                        : 'text-slate-700 hover:bg-slate-100'
+                    }`}
+                  >
+                    <span className="truncate">{r.name}</span>
+                    {r.badge && (
+                      <span className="px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-700 text-[9px] font-bold">
+                        {r.badge}
+                      </span>
+                    )}
+                  </button>
+                ))}
+            </div>
+          </div>
         </div>
       </div>
 
@@ -455,7 +621,8 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
                   ['today', 'Today'],
                   ['this_week', 'This Week'],
                   ['this_month', 'This Month'],
-                  ['this_quarter', 'This Quarter'],
+                  ['by_month', 'Month'],
+                  ['by_quarter', 'Quarter'],
                   ['this_year', 'This FY'],
                   ['all', 'All Time'],
                   ['custom', 'Custom'],
@@ -475,6 +642,46 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
                 </button>
               ))}
             </div>
+
+            {/* Specific Month Picker */}
+            {datePreset === 'by_month' && (
+              <div className="flex items-center gap-2">
+                <span className="text-[11px] text-slate-500 font-medium">Select Month:</span>
+                <input
+                  type="month"
+                  value={selectedMonth}
+                  onChange={(e) => setSelectedMonth(e.target.value)}
+                  className="px-2.5 py-1 bg-slate-50 border border-slate-200 rounded-md text-[11px] font-mono cursor-pointer"
+                />
+              </div>
+            )}
+
+            {/* Specific Fiscal Quarter Picker */}
+            {datePreset === 'by_quarter' && (
+              <div className="flex items-center gap-2">
+                <select
+                  value={selectedQuarterNum}
+                  onChange={(e) => setSelectedQuarterNum(e.target.value as 'Q1' | 'Q2' | 'Q3' | 'Q4')}
+                  className="px-2.5 py-1 bg-slate-50 border border-slate-200 rounded-md text-[11px] font-medium cursor-pointer"
+                >
+                  <option value="Q1">Q1 (Apr – Jun)</option>
+                  <option value="Q2">Q2 (Jul – Sep)</option>
+                  <option value="Q3">Q3 (Oct – Dec)</option>
+                  <option value="Q4">Q4 (Jan – Mar)</option>
+                </select>
+                <select
+                  value={selectedQuarterFY}
+                  onChange={(e) => setSelectedQuarterFY(Number(e.target.value))}
+                  className="px-2.5 py-1 bg-slate-50 border border-slate-200 rounded-md text-[11px] font-mono cursor-pointer"
+                >
+                  {[2023, 2024, 2025, 2026, 2027].map((yr) => (
+                    <option key={yr} value={yr}>
+                      FY {yr}-{String(yr + 1).slice(-2)}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
 
             {/* Custom Range if Custom selected */}
             {datePreset === 'custom' && (
@@ -640,6 +847,21 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
             <ItemWiseSalesReportView
               items={items}
               transactions={filteredTxs}
+            />
+          )}
+
+          {/* 14. AUDIT TRAIL */}
+          {activeReport === 'audit_trail' && (
+            <AuditTrailReportView
+              logs={auditLogs}
+              searchQuery={searchQuery}
+              onClearLogs={async () => {
+                const ok = await requirePin('Enter PIN to clear Audit Trail logs');
+                if (!ok) return;
+                await clearAuditLogs();
+                setAuditLogs([]);
+              }}
+              onRefresh={loadAllData}
             />
           )}
         </div>
@@ -932,21 +1154,27 @@ const DaybookReportView: React.FC<{
 
   const rows: DaybookRow[] = [
     ...transactions.map((t) => {
-      const isInflow = t.type === 'sale_invoice' || t.type === 'payment_in';
-      const amount =
-        t.type === 'sale_invoice'
-          ? t.receivedAmount || 0
-          : t.type === 'purchase_bill'
-          ? t.receivedAmount || 0
-          : t.totalAmount;
+      const isNonCash =
+        t.type === 'estimate' ||
+        t.type === 'delivery_challan' ||
+        t.type === 'job_work_out' ||
+        t.type === 'job_work_in';
+      const isInflow = t.type === 'sale_invoice' || t.type === 'payment_in' || t.type === 'purchase_return';
+      const amount = isNonCash
+        ? 0
+        : t.type === 'sale_invoice'
+        ? t.receivedAmount || 0
+        : t.type === 'purchase_bill'
+        ? t.receivedAmount || 0
+        : t.totalAmount;
       return {
         id: t.id,
         date: t.date,
         refNo: t.invoiceNo,
         particulars: t.partyName || 'Cash Sale',
-        type: t.type.replace('_', ' '),
+        type: t.type.replace(/_/g, ' '),
         inflow: isInflow ? amount : 0,
-        outflow: !isInflow ? amount : 0,
+        outflow: !isInflow && !isNonCash ? amount : 0,
         originalTx: t,
       };
     }),
@@ -1202,24 +1430,44 @@ const ProfitAndLossView: React.FC<{
 };
 
 // =========================================================================
-// SUB-REPORT 6: GSTR-1 SUMMARY (B2B, B2C, HSN Summary)
+// SUB-REPORT 6: GSTR-1 SUMMARY (B2B, B2C Large, B2C Small, Credit Notes, HSN Summary)
 // =========================================================================
 const Gstr1ReportView: React.FC<{ transactions: Transaction[] }> = ({ transactions }) => {
   const sales = transactions.filter((t) => t.type === 'sale_invoice');
+  const creditNotes = transactions.filter((t) => t.type === 'sale_return');
 
-  // B2B: Invoices with valid GSTIN
+  // 4A: B2B Invoices with valid 15-char GSTIN
   const b2bInvoices = sales.filter((t) => t.partyGstin && t.partyGstin.trim().length === 15);
   const b2bTaxable = b2bInvoices.reduce((acc, t) => acc + t.subtotal, 0);
   const b2bTax = b2bInvoices.reduce((acc, t) => acc + t.totalTax, 0);
 
-  // B2C: Unregistered
-  const b2cInvoices = sales.filter((t) => !t.partyGstin || t.partyGstin.trim().length !== 15);
-  const b2cTaxable = b2cInvoices.reduce((acc, t) => acc + t.subtotal, 0);
-  const b2cTax = b2cInvoices.reduce((acc, t) => acc + t.totalTax, 0);
+  // 5: B2C Large (Inter-state unregistered invoices > ₹2,50,000)
+  const b2cLargeInvoices = sales.filter(
+    (t) => (!t.partyGstin || t.partyGstin.trim().length !== 15) && t.igst > 0 && t.totalAmount > 250000
+  );
+  const b2cLargeTaxable = b2cLargeInvoices.reduce((acc, t) => acc + t.subtotal, 0);
+  const b2cLargeTax = b2cLargeInvoices.reduce((acc, t) => acc + t.totalTax, 0);
 
-  // HSN Summary aggregation
-  const hsnMap = new Map<string, { hsn: string; desc: string; uqc: string; totalQty: number; taxable: number; cgst: number; sgst: number; igst: number; totalTax: number }>();
+  // 7: B2C Small (Remaining unregistered sales)
+  const b2cSmallInvoices = sales.filter(
+    (t) => (!t.partyGstin || t.partyGstin.trim().length !== 15) && !(t.igst > 0 && t.totalAmount > 250000)
+  );
+  const b2cSmallTaxable = b2cSmallInvoices.reduce((acc, t) => acc + t.subtotal, 0);
+  const b2cSmallTax = b2cSmallInvoices.reduce((acc, t) => acc + t.totalTax, 0);
+
+  // 9B: Credit Notes (Sale Returns reducing liability)
+  const cnTaxable = creditNotes.reduce((acc, t) => acc + t.subtotal, 0);
+  const cnTax = creditNotes.reduce((acc, t) => acc + t.totalTax, 0);
+
+  const netOutwardTax = b2bTax + b2cLargeTax + b2cSmallTax - cnTax;
+
+  // 12: HSN Summary aggregation (net of credit notes optional — keep outward supply HSN clearly itemized)
+  const hsnMap = new Map<
+    string,
+    { hsn: string; desc: string; uqc: string; totalQty: number; taxable: number; cgst: number; sgst: number; igst: number; totalTax: number }
+  >();
   for (const s of sales) {
+    const isInterState = s.igst > 0;
     for (const item of s.items) {
       const hsnKey = item.hsn || 'NON-HSN';
       const existing = hsnMap.get(hsnKey) || {
@@ -1234,9 +1482,16 @@ const Gstr1ReportView: React.FC<{ transactions: Transaction[] }> = ({ transactio
         totalTax: 0,
       };
 
+      const taxAmt = item.taxAmount || 0;
       existing.totalQty += item.qty || 0;
-      existing.taxable += item.totalAmount - (item.taxAmount || 0);
-      existing.totalTax += item.taxAmount || 0;
+      existing.taxable += (item.totalAmount || 0) - taxAmt;
+      existing.totalTax += taxAmt;
+      if (isInterState) {
+        existing.igst += taxAmt;
+      } else {
+        existing.cgst += taxAmt / 2;
+        existing.sgst += taxAmt / 2;
+      }
       hsnMap.set(hsnKey, existing);
     }
   }
@@ -1245,26 +1500,114 @@ const Gstr1ReportView: React.FC<{ transactions: Transaction[] }> = ({ transactio
 
   return (
     <div className="space-y-6">
-      {/* 3 Summary Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+      {/* 5 Summary Cards */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
         <div className="p-4 bg-white rounded-xl border border-slate-200 shadow-2xs">
-          <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">4A - B2B Invoices</span>
+          <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">4A · B2B Registered</span>
           <div className="text-lg font-bold text-slate-900 font-mono mt-1">{formatINR(b2bTaxable)}</div>
-          <span className="text-[11px] text-slate-500">{b2bInvoices.length} Registered Buyers · Tax: {formatINR(b2bTax)}</span>
+          <span className="text-[11px] text-slate-500">{b2bInvoices.length} Invoices · Tax: {formatINR(b2bTax)}</span>
         </div>
         <div className="p-4 bg-white rounded-xl border border-slate-200 shadow-2xs">
-          <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">7 - B2C Small Invoices</span>
-          <div className="text-lg font-bold text-slate-900 font-mono mt-1">{formatINR(b2cTaxable)}</div>
-          <span className="text-[11px] text-slate-500">{b2cInvoices.length} Unregistered Consumers · Tax: {formatINR(b2cTax)}</span>
+          <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">5 · B2C Large (&gt;2.5L)</span>
+          <div className="text-lg font-bold text-slate-900 font-mono mt-1">{formatINR(b2cLargeTaxable)}</div>
+          <span className="text-[11px] text-slate-500">{b2cLargeInvoices.length} Inter-state · Tax: {formatINR(b2cLargeTax)}</span>
         </div>
         <div className="p-4 bg-white rounded-xl border border-slate-200 shadow-2xs">
-          <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">Total Output GST</span>
-          <div className="text-lg font-bold text-rose-600 font-mono mt-1">{formatINR(b2bTax + b2cTax)}</div>
-          <span className="text-[11px] text-slate-400">Total Tax Liability</span>
+          <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">7 · B2C Small</span>
+          <div className="text-lg font-bold text-slate-900 font-mono mt-1">{formatINR(b2cSmallTaxable)}</div>
+          <span className="text-[11px] text-slate-500">{b2cSmallInvoices.length} Invoices · Tax: {formatINR(b2cSmallTax)}</span>
+        </div>
+        <div className="p-4 bg-white rounded-xl border border-slate-200 shadow-2xs">
+          <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">9B · Credit Notes</span>
+          <div className="text-lg font-bold text-amber-700 font-mono mt-1">-{formatINR(cnTaxable)}</div>
+          <span className="text-[11px] text-slate-500">{creditNotes.length} Returns · Tax: -{formatINR(cnTax)}</span>
+        </div>
+        <div className="p-4 bg-white rounded-xl border border-rose-200 bg-rose-50/30 shadow-2xs">
+          <span className="text-[10px] font-bold text-rose-700 uppercase tracking-wider block">Net Output GST</span>
+          <div className="text-lg font-bold text-rose-700 font-mono mt-1">{formatINR(netOutwardTax)}</div>
+          <span className="text-[11px] text-rose-600">After Credit Note reversals</span>
         </div>
       </div>
 
-      {/* HSN Summary Table */}
+      {/* 4A B2B Invoices Detail Table */}
+      {b2bInvoices.length > 0 && (
+        <div className="bg-white rounded-xl border border-slate-200 shadow-2xs overflow-hidden">
+          <div className="px-5 py-3 border-b border-slate-200">
+            <h3 className="text-xs font-bold text-slate-900 uppercase">4A - B2B Invoices (Registered Buyers)</h3>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs border-collapse">
+              <thead>
+                <tr className="bg-slate-50 text-slate-600 font-semibold border-b border-slate-200 uppercase text-[11px]">
+                  <th className="py-2.5 px-4">GSTIN</th>
+                  <th className="py-2.5 px-4">Party Name</th>
+                  <th className="py-2.5 px-4">Invoice #</th>
+                  <th className="py-2.5 px-4">Date</th>
+                  <th className="py-2.5 px-4 text-right">Taxable</th>
+                  <th className="py-2.5 px-4 text-right">CGST</th>
+                  <th className="py-2.5 px-4 text-right">SGST</th>
+                  <th className="py-2.5 px-4 text-right">IGST</th>
+                  <th className="py-2.5 px-4 text-right">Total</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {b2bInvoices.map((inv) => (
+                  <tr key={inv.id} className="hover:bg-slate-50">
+                    <td className="py-2.5 px-4 font-mono font-bold text-slate-900">{inv.partyGstin}</td>
+                    <td className="py-2.5 px-4 text-slate-800">{inv.partyName}</td>
+                    <td className="py-2.5 px-4 font-mono">{inv.invoiceNo}</td>
+                    <td className="py-2.5 px-4 font-mono text-slate-600">{formatDate(inv.date)}</td>
+                    <td className="py-2.5 px-4 text-right font-mono tabular-nums">{formatINR(inv.subtotal)}</td>
+                    <td className="py-2.5 px-4 text-right font-mono tabular-nums">{formatINR(inv.cgst)}</td>
+                    <td className="py-2.5 px-4 text-right font-mono tabular-nums">{formatINR(inv.sgst)}</td>
+                    <td className="py-2.5 px-4 text-right font-mono tabular-nums">{formatINR(inv.igst)}</td>
+                    <td className="py-2.5 px-4 text-right font-mono font-bold tabular-nums">{formatINR(inv.totalAmount)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* 9B Credit Notes Table */}
+      {creditNotes.length > 0 && (
+        <div className="bg-white rounded-xl border border-slate-200 shadow-2xs overflow-hidden">
+          <div className="px-5 py-3 border-b border-slate-200">
+            <h3 className="text-xs font-bold text-slate-900 uppercase">9B - Credit Notes (Sale Returns GST Reversal)</h3>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs border-collapse">
+              <thead>
+                <tr className="bg-slate-50 text-slate-600 font-semibold border-b border-slate-200 uppercase text-[11px]">
+                  <th className="py-2.5 px-4">Credit Note #</th>
+                  <th className="py-2.5 px-4">Original Inv</th>
+                  <th className="py-2.5 px-4">Party Name</th>
+                  <th className="py-2.5 px-4">GSTIN</th>
+                  <th className="py-2.5 px-4 text-right">Taxable Reversed</th>
+                  <th className="py-2.5 px-4 text-right">Tax Reversed</th>
+                  <th className="py-2.5 px-4 text-right">Note Value</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {creditNotes.map((cn) => (
+                  <tr key={cn.id} className="hover:bg-slate-50">
+                    <td className="py-2.5 px-4 font-mono font-bold text-amber-700">{cn.invoiceNo}</td>
+                    <td className="py-2.5 px-4 font-mono text-slate-500">{cn.originalInvoiceNo || '-'}</td>
+                    <td className="py-2.5 px-4 text-slate-800">{cn.partyName}</td>
+                    <td className="py-2.5 px-4 font-mono text-slate-500">{cn.partyGstin || 'URP'}</td>
+                    <td className="py-2.5 px-4 text-right font-mono tabular-nums">{formatINR(cn.subtotal)}</td>
+                    <td className="py-2.5 px-4 text-right font-mono text-amber-700 tabular-nums">{formatINR(cn.totalTax)}</td>
+                    <td className="py-2.5 px-4 text-right font-mono font-bold tabular-nums">{formatINR(cn.totalAmount)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* 12 HSN Summary Table */}
       <div className="bg-white rounded-xl border border-slate-200 shadow-2xs overflow-hidden">
         <div className="px-5 py-3 border-b border-slate-200">
           <h3 className="text-xs font-bold text-slate-900 uppercase">12 - HSN-Wise Summary of Outward Supplies</h3>
@@ -1275,23 +1618,37 @@ const Gstr1ReportView: React.FC<{ transactions: Transaction[] }> = ({ transactio
               <tr className="bg-slate-50 text-slate-600 font-semibold border-b border-slate-200 uppercase text-[11px]">
                 <th className="py-2.5 px-4">HSN Code</th>
                 <th className="py-2.5 px-4">Description</th>
-                <th className="py-2.5 px-4">UQC Unit</th>
+                <th className="py-2.5 px-4">UQC</th>
                 <th className="py-2.5 px-4 text-right">Total Qty</th>
-                <th className="py-2.5 px-4 text-right">Total Taxable Value</th>
-                <th className="py-2.5 px-4 text-right">Total Tax Amount</th>
+                <th className="py-2.5 px-4 text-right">Taxable Value</th>
+                <th className="py-2.5 px-4 text-right">CGST</th>
+                <th className="py-2.5 px-4 text-right">SGST</th>
+                <th className="py-2.5 px-4 text-right">IGST</th>
+                <th className="py-2.5 px-4 text-right">Total Tax</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {hsnList.map((hsn) => (
-                <tr key={hsn.hsn} className="hover:bg-slate-50">
-                  <td className="py-2.5 px-4 font-mono font-bold text-slate-900">{hsn.hsn}</td>
-                  <td className="py-2.5 px-4 text-slate-800">{hsn.desc}</td>
-                  <td className="py-2.5 px-4 font-mono">{hsn.uqc}</td>
-                  <td className="py-2.5 px-4 text-right font-mono font-semibold">{hsn.totalQty}</td>
-                  <td className="py-2.5 px-4 text-right font-mono font-semibold tabular-nums">{formatINR(hsn.taxable)}</td>
-                  <td className="py-2.5 px-4 text-right font-mono font-bold text-rose-700 tabular-nums">{formatINR(hsn.totalTax)}</td>
+              {hsnList.length > 0 ? (
+                hsnList.map((hsn) => (
+                  <tr key={hsn.hsn} className="hover:bg-slate-50">
+                    <td className="py-2.5 px-4 font-mono font-bold text-slate-900">{hsn.hsn}</td>
+                    <td className="py-2.5 px-4 text-slate-800">{hsn.desc}</td>
+                    <td className="py-2.5 px-4 font-mono">{hsn.uqc}</td>
+                    <td className="py-2.5 px-4 text-right font-mono font-semibold">{hsn.totalQty}</td>
+                    <td className="py-2.5 px-4 text-right font-mono font-semibold tabular-nums">{formatINR(hsn.taxable)}</td>
+                    <td className="py-2.5 px-4 text-right font-mono tabular-nums">{formatINR(hsn.cgst)}</td>
+                    <td className="py-2.5 px-4 text-right font-mono tabular-nums">{formatINR(hsn.sgst)}</td>
+                    <td className="py-2.5 px-4 text-right font-mono tabular-nums">{formatINR(hsn.igst)}</td>
+                    <td className="py-2.5 px-4 text-right font-mono font-bold text-rose-700 tabular-nums">{formatINR(hsn.totalTax)}</td>
+                  </tr>
+                ))
+              ) : (
+                <tr>
+                  <td colSpan={9} className="py-8 text-center text-slate-400">
+                    No outward supplies in selected period.
+                  </td>
                 </tr>
-              ))}
+              )}
             </tbody>
           </table>
         </div>
@@ -1301,23 +1658,28 @@ const Gstr1ReportView: React.FC<{ transactions: Transaction[] }> = ({ transactio
 };
 
 // =========================================================================
-// SUB-REPORT 7: GSTR-2 SUMMARY (Input Tax Credit on Purchases)
+// SUB-REPORT 7: PURCHASE TAX SUMMARY / GSTR-2 (Net Input Tax Credit)
 // =========================================================================
 const Gstr2ReportView: React.FC<{ transactions: Transaction[] }> = ({ transactions }) => {
-  const purchases = transactions.filter((t) => t.type === 'purchase_bill');
-  const totalTaxable = purchases.reduce((acc, t) => acc + t.subtotal, 0);
-  const totalCGST = purchases.reduce((acc, t) => acc + (t.cgst || 0), 0);
-  const totalSGST = purchases.reduce((acc, t) => acc + (t.sgst || 0), 0);
-  const totalIGST = purchases.reduce((acc, t) => acc + (t.igst || 0), 0);
+  const purchases = transactions.filter((t) => t.type === 'purchase_bill' || t.type === 'purchase_return');
+  const totalTaxable = purchases.reduce((acc, t) => acc + (t.type === 'purchase_return' ? -t.subtotal : t.subtotal), 0);
+  const totalCGST = purchases.reduce((acc, t) => acc + (t.type === 'purchase_return' ? -(t.cgst || 0) : (t.cgst || 0)), 0);
+  const totalSGST = purchases.reduce((acc, t) => acc + (t.type === 'purchase_return' ? -(t.sgst || 0) : (t.sgst || 0)), 0);
+  const totalIGST = purchases.reduce((acc, t) => acc + (t.type === 'purchase_return' ? -(t.igst || 0) : (t.igst || 0)), 0);
   const totalITC = totalCGST + totalSGST + totalIGST;
 
   return (
     <div className="space-y-4">
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
         <div className="p-4 bg-white rounded-xl border border-slate-200 shadow-2xs">
-          <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">Eligible ITC</span>
+          <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">Net Taxable Purchases</span>
+          <div className="text-lg font-bold text-slate-900 font-mono mt-1">{formatINR(totalTaxable)}</div>
+          <span className="text-[11px] text-slate-400">{purchases.length} Docs</span>
+        </div>
+        <div className="p-4 bg-white rounded-xl border border-blue-200 bg-blue-50/30 shadow-2xs">
+          <span className="text-[10px] font-bold text-blue-700 uppercase tracking-wider block">Net Eligible ITC</span>
           <div className="text-lg font-bold text-blue-700 font-mono mt-1">{formatINR(totalITC)}</div>
-          <span className="text-[11px] text-slate-400">Total Input Credit</span>
+          <span className="text-[11px] text-blue-600">Net of Debit Notes</span>
         </div>
         <div className="p-4 bg-white rounded-xl border border-slate-200 shadow-2xs">
           <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">Input CGST</span>
@@ -1339,30 +1701,54 @@ const Gstr2ReportView: React.FC<{ transactions: Transaction[] }> = ({ transactio
             <thead>
               <tr className="bg-slate-50 text-slate-600 font-semibold border-b border-slate-200 uppercase text-[11px]">
                 <th className="py-2.5 px-4">Date</th>
+                <th className="py-2.5 px-4">Type</th>
                 <th className="py-2.5 px-4">Supplier GSTIN</th>
                 <th className="py-2.5 px-4">Supplier Name</th>
-                <th className="py-2.5 px-4">Bill #</th>
+                <th className="py-2.5 px-4">Bill / Note #</th>
                 <th className="py-2.5 px-4 text-right">Taxable (₹)</th>
                 <th className="py-2.5 px-4 text-right">CGST</th>
                 <th className="py-2.5 px-4 text-right">SGST</th>
                 <th className="py-2.5 px-4 text-right">IGST</th>
-                <th className="py-2.5 px-4 text-right">Eligible ITC (₹)</th>
+                <th className="py-2.5 px-4 text-right">ITC (₹)</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {purchases.map((p) => (
-                <tr key={p.id} className="hover:bg-slate-50">
-                  <td className="py-2.5 px-4 font-mono text-slate-600">{formatDate(p.date)}</td>
-                  <td className="py-2.5 px-4 font-mono font-bold text-slate-900">{p.partyGstin || 'Unregistered'}</td>
-                  <td className="py-2.5 px-4 text-slate-800">{p.partyName}</td>
-                  <td className="py-2.5 px-4 font-mono">{p.invoiceNo}</td>
-                  <td className="py-2.5 px-4 text-right font-mono tabular-nums">{formatINR(p.subtotal)}</td>
-                  <td className="py-2.5 px-4 text-right font-mono tabular-nums">{formatINR(p.cgst)}</td>
-                  <td className="py-2.5 px-4 text-right font-mono tabular-nums">{formatINR(p.sgst)}</td>
-                  <td className="py-2.5 px-4 text-right font-mono tabular-nums">{formatINR(p.igst)}</td>
-                  <td className="py-2.5 px-4 text-right font-mono font-bold text-blue-700 tabular-nums">{formatINR(p.totalTax)}</td>
+              {purchases.length > 0 ? (
+                purchases.map((p) => {
+                  const isReturn = p.type === 'purchase_return';
+                  const sign = isReturn ? -1 : 1;
+                  return (
+                    <tr key={p.id} className="hover:bg-slate-50">
+                      <td className="py-2.5 px-4 font-mono text-slate-600">{formatDate(p.date)}</td>
+                      <td className="py-2.5 px-4">
+                        <span
+                          className={`px-1.5 py-0.5 rounded text-[10px] font-semibold ${
+                            isReturn ? 'bg-amber-100 text-amber-800' : 'bg-blue-100 text-blue-800'
+                          }`}
+                        >
+                          {isReturn ? 'Debit Note' : 'Bill'}
+                        </span>
+                      </td>
+                      <td className="py-2.5 px-4 font-mono font-bold text-slate-900">{p.partyGstin || 'Unregistered'}</td>
+                      <td className="py-2.5 px-4 text-slate-800">{p.partyName}</td>
+                      <td className="py-2.5 px-4 font-mono">{p.invoiceNo}</td>
+                      <td className="py-2.5 px-4 text-right font-mono tabular-nums">{formatINR(sign * p.subtotal)}</td>
+                      <td className="py-2.5 px-4 text-right font-mono tabular-nums">{formatINR(sign * (p.cgst || 0))}</td>
+                      <td className="py-2.5 px-4 text-right font-mono tabular-nums">{formatINR(sign * (p.sgst || 0))}</td>
+                      <td className="py-2.5 px-4 text-right font-mono tabular-nums">{formatINR(sign * (p.igst || 0))}</td>
+                      <td className={`py-2.5 px-4 text-right font-mono font-bold tabular-nums ${isReturn ? 'text-amber-700' : 'text-blue-700'}`}>
+                        {formatINR(sign * p.totalTax)}
+                      </td>
+                    </tr>
+                  );
+                })
+              ) : (
+                <tr>
+                  <td colSpan={10} className="py-8 text-center text-slate-400">
+                    No purchase bills or debit notes in selected period.
+                  </td>
                 </tr>
-              ))}
+              )}
             </tbody>
           </table>
         </div>
@@ -1835,3 +2221,145 @@ const ItemWiseSalesReportView: React.FC<{ items: Item[]; transactions: Transacti
     </div>
   );
 };
+
+// =========================================================================
+// SUB-REPORT 14: AUDIT TRAIL REPORT VIEW
+// =========================================================================
+const AuditTrailReportView: React.FC<{
+  logs: AuditLogEntry[];
+  searchQuery: string;
+  onClearLogs: () => Promise<void>;
+  onRefresh: () => void;
+}> = ({ logs, searchQuery, onClearLogs, onRefresh }) => {
+  const [actionFilter, setActionFilter] = useState<string>('all');
+
+  const filteredLogs = useMemo(() => {
+    const q = searchQuery.toLowerCase().trim();
+    return logs.filter((l) => {
+      if (actionFilter !== 'all' && l.action !== actionFilter) return false;
+      if (!q) return true;
+      return (
+        l.entityLabel.toLowerCase().includes(q) ||
+        l.details.toLowerCase().includes(q) ||
+        l.entityType.toLowerCase().includes(q) ||
+        l.actor.toLowerCase().includes(q)
+      );
+    });
+  }, [logs, actionFilter, searchQuery]);
+
+  const badgeClass = (action: string) => {
+    switch (action) {
+      case 'CREATE':
+        return 'bg-emerald-50 text-emerald-700 border-emerald-200';
+      case 'EDIT':
+        return 'bg-blue-50 text-blue-700 border-blue-200';
+      case 'DELETE':
+      case 'CANCEL':
+        return 'bg-rose-50 text-rose-700 border-rose-200';
+      case 'CONVERT':
+        return 'bg-indigo-50 text-indigo-700 border-indigo-200';
+      case 'BACKUP_RESTORE':
+        return 'bg-amber-50 text-amber-700 border-amber-200';
+      default:
+        return 'bg-slate-100 text-slate-700 border-slate-200';
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="p-4 bg-white rounded-xl border border-slate-200 shadow-2xs flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-2.5">
+          <div className="w-8 h-8 rounded-lg bg-indigo-50 text-indigo-600 flex items-center justify-center">
+            <Activity className="w-4 h-4" />
+          </div>
+          <div>
+            <div className="text-xs font-bold text-slate-900">
+              Audit Activity Log ({filteredLogs.length} events)
+            </div>
+            <div className="text-[11px] text-slate-500">
+              Enable or disable logging in Settings &rarr; Optional Features &amp; Security.
+            </div>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <select
+            value={actionFilter}
+            onChange={(e) => setActionFilter(e.target.value)}
+            className="px-3 py-1.5 text-xs bg-slate-50 border border-slate-300 rounded-lg cursor-pointer"
+          >
+            <option value="all">All Actions</option>
+            <option value="CREATE">CREATE</option>
+            <option value="EDIT">EDIT</option>
+            <option value="DELETE">DELETE</option>
+            <option value="CANCEL">CANCEL</option>
+            <option value="CONVERT">CONVERT</option>
+            <option value="SETTINGS">SETTINGS</option>
+            <option value="BACKUP_RESTORE">BACKUP_RESTORE</option>
+          </select>
+
+          <button
+            type="button"
+            onClick={onRefresh}
+            className="px-3 py-1.5 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg cursor-pointer"
+          >
+            Refresh
+          </button>
+
+          {logs.length > 0 && (
+            <button
+              type="button"
+              onClick={onClearLogs}
+              className="px-3 py-1.5 text-xs font-semibold text-rose-600 bg-rose-50 hover:bg-rose-100 border border-rose-200 rounded-lg flex items-center gap-1 cursor-pointer"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              <span>Clear Logs</span>
+            </button>
+          )}
+        </div>
+      </div>
+
+      <div className="bg-white rounded-xl border border-slate-200 shadow-2xs overflow-hidden">
+        {filteredLogs.length === 0 ? (
+          <div className="p-12 text-center text-xs text-slate-400">
+            No audit log entries recorded yet. Turn on Audit Trail in Settings &rarr; Optional Features &amp; Security to record events.
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs border-collapse">
+              <thead>
+                <tr className="bg-slate-50 text-slate-600 font-semibold border-b border-slate-200 uppercase text-[11px]">
+                  <th className="py-2.5 px-4">Timestamp</th>
+                  <th className="py-2.5 px-4">Action</th>
+                  <th className="py-2.5 px-4">Entity</th>
+                  <th className="py-2.5 px-4">Reference / Name</th>
+                  <th className="py-2.5 px-4">Details</th>
+                  <th className="py-2.5 px-4">Actor</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {filteredLogs.map((l) => (
+                  <tr key={l.id} className="hover:bg-slate-50">
+                    <td className="py-2.5 px-4 font-mono text-[11px] text-slate-500 whitespace-nowrap">
+                      {new Date(l.timestamp).toLocaleString('en-IN')}
+                    </td>
+                    <td className="py-2.5 px-4">
+                      <span className={`px-2 py-0.5 rounded border text-[10px] font-bold font-mono ${badgeClass(l.action)}`}>
+                        {l.action}
+                      </span>
+                    </td>
+                    <td className="py-2.5 px-4 font-mono text-[11px] uppercase text-slate-600">{l.entityType}</td>
+                    <td className="py-2.5 px-4 font-semibold text-slate-900">{l.entityLabel}</td>
+                    <td className="py-2.5 px-4 text-slate-600">{l.details}</td>
+                    <td className="py-2.5 px-4 font-mono text-[11px] text-slate-500">{l.actor}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+

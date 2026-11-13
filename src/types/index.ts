@@ -28,6 +28,8 @@ export interface BusinessProfile {
   debitNotePrefix?: string;
   estimatePrefix?: string;
   expensePrefix?: string;
+  jobWorkOutPrefix?: string;
+  jobWorkInPrefix?: string;
   nextInvoiceNumber: number;
   nextPurchaseNumber: number;
   nextChallanNumber?: number;
@@ -37,6 +39,8 @@ export interface BusinessProfile {
   nextDebitNoteNumber?: number;
   nextEstimateNumber?: number;
   nextExpenseNumber?: number;
+  nextJobWorkOutNumber?: number;
+  nextJobWorkInNumber?: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -94,6 +98,7 @@ export interface Item {
   unit: string;
   category: string;
   itemCode: string;
+  barcode?: string;
   taxRate: number;
   salePrice: number;
   salePriceTaxType: PriceTaxType;
@@ -109,6 +114,7 @@ export interface Item {
   stockValue?: number;
   manufacturer?: string;
   batchNumber?: string;
+  serialNumber?: string;
   expiryDate?: string;
   createdAt: string;
   updatedAt: string;
@@ -127,12 +133,17 @@ export interface TransactionItem {
   taxAmount: number;
   discountAmount: number;
   totalAmount: number;
+  batchNumber?: string;
+  serialNumber?: string;
+  expiryDate?: string;
 }
 
 export type TransactionType =
   | 'sale_invoice'
   | 'purchase_bill'
   | 'delivery_challan'
+  | 'job_work_out'
+  | 'job_work_in'
   | 'payment_in'
   | 'payment_out'
   | 'sale_return'
@@ -183,6 +194,9 @@ export interface Transaction {
   documentUrl?: string;
   challanStatus?: 'open' | 'converted' | 'cancelled';
   linkedChallanId?: string;
+  jobWorkStatus?: 'sent' | 'partial_received' | 'completed';
+  linkedJobWorkId?: string;
+  processType?: string;
   estimateStatus?: 'open' | 'converted' | 'expired';
   referenceNo?: string;
   receiptNo?: string;
@@ -215,6 +229,18 @@ export interface Expense {
 
 export type FilterPeriod = 'this_month' | 'last_30_days' | 'this_quarter' | 'this_year' | 'all';
 
+export interface OverdueInvoiceInfo {
+  transactionId: string;
+  invoiceNo: string;
+  partyId: string;
+  partyName: string;
+  partyPhone: string;
+  dueDate: string;
+  daysOverdue: number;
+  balanceDue: number;
+  totalAmount: number;
+}
+
 export interface DashboardMetrics {
   totalReceivable: number;
   totalPayable: number;
@@ -228,10 +254,35 @@ export interface DashboardMetrics {
   period: FilterPeriod;
   salesByDay: { date: string; amount: number; count: number }[];
   recentTransactions: Transaction[];
+  overduePayments?: OverdueInvoiceInfo[];
+  lowStockItems?: Item[];
+}
+
+export interface FirmInfo {
+  id: string;
+  name: string;
+  dbName: string;
+  gstin?: string;
+  createdAt: string;
+}
+
+export type AuditAction = 'CREATE' | 'EDIT' | 'DELETE' | 'CANCEL' | 'CONVERT' | 'SETTINGS' | 'BACKUP_RESTORE';
+
+export interface AuditLogEntry {
+  id: string;
+  timestamp: string;
+  action: AuditAction;
+  entityType: 'transaction' | 'party' | 'item' | 'expense' | 'settings' | 'system';
+  entityId?: string;
+  entityLabel: string;
+  actor: string;
+  details: string;
 }
 
 export interface AppSettings {
   id: 'current';
+  language?: 'en' | 'ta';
+  invoicePrintLanguage?: 'en' | 'ta' | 'bilingual';
   decimalPlaces: number;
   currencySymbol: string;
   dateFormat: 'DD/MM/YYYY' | 'YYYY-MM-DD' | 'MM/DD/YYYY';
@@ -242,6 +293,7 @@ export interface AppSettings {
   autoRoundOff: boolean;
   defaultPaymentMode: PaymentType;
   defaultDueDays: number;
+  overdueReminderDays?: number;
   enableCreditLimitAlerts: boolean;
   enableBatchExpiry: boolean;
   enableWholesalePrice: boolean;
@@ -262,6 +314,17 @@ export interface AppSettings {
   eWayBillThreshold: number;
   autoBackupPrompt: boolean;
   whatsappMessageTemplate: string;
+  // Add-on C Optional Features (each controlled behind a switch in Settings)
+  enableMultipleFirms?: boolean;
+  enablePasscodeLock?: boolean;
+  requirePinForEditDelete?: boolean;
+  enableAuditTrail?: boolean;
+  enableBarcode?: boolean;
+  enableBatchSerial?: boolean;
+  darkMode?: boolean;
+  enableExtendedShortcuts?: boolean;
+  enableWeightUnits?: boolean;
+  enableJobWork?: boolean;
   updatedAt: string;
 }
 

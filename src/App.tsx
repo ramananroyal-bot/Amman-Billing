@@ -1,12 +1,30 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { BusinessProfile, DashboardMetrics, FilterPeriod, Party, Transaction, Expense } from './types';
 import {
+  AppSettings,
+  BusinessProfile,
+  DashboardMetrics,
+  FilterPeriod,
+  FirmInfo,
+  Party,
+  Transaction,
+  Expense,
+} from './types';
+import {
+  getAppSettings,
   getBusinessProfile,
   getDashboardMetrics,
   getParty,
   cancelTransaction,
   deleteTransaction,
+  switchActiveFirmDB,
 } from './db/indexedDB';
+import {
+  getFirmsList,
+  getActiveFirmId,
+  updateFirmMeta,
+  applyDarkModeClass,
+} from './utils/security';
+import { useSecurity } from './contexts/SecurityContext';
 import { formatINR, formatDate } from './utils/formatters';
 import { SetupScreen } from './components/setup/SetupScreen';
 import { Sidebar, NavView } from './components/layout/Sidebar';
@@ -15,7 +33,9 @@ import { HomeView } from './components/home/HomeView';
 import { PartiesView } from './components/parties/PartiesView';
 import { ItemsView } from './components/items/ItemsView';
 import { SalesView } from './components/sales/SalesView';
+import { EstimatesView } from './components/estimates/EstimatesView';
 import { DeliveryChallansView } from './components/challans/DeliveryChallansView';
+import { JobWorkView } from './components/jobwork/JobWorkView';
 import { PurchasesView } from './components/purchases/PurchasesView';
 import { PaymentsView } from './components/payments/PaymentsView';
 import { PaymentRecordModal } from './components/payments/PaymentRecordModal';
@@ -36,10 +56,18 @@ import { useToast } from './components/common/Toast';
 import { SettingsModal } from './components/modals/SettingsModal';
 import { ShortcutsModal } from './components/modals/ShortcutsModal';
 import { DesktopAppModal } from './components/modals/DesktopAppModal';
+import { CreateFirmModal } from './components/modals/CreateFirmModal';
+import { useTranslation } from './i18n/LanguageContext';
 
 export default function App() {
+  const { t } = useTranslation();
+  const { requirePin } = useSecurity();
   const [isLoading, setIsLoading] = useState(true);
   const [businessProfile, setBusinessProfile] = useState<BusinessProfile | null>(null);
+  const [appSettings, setAppSettings] = useState<AppSettings | null>(null);
+  const [firmsList, setFirmsList] = useState<FirmInfo[]>(() => getFirmsList());
+  const [activeFirmId, setActiveFirmId] = useState<string>(() => getActiveFirmId());
+  const [showCreateFirm, setShowCreateFirm] = useState(false);
   const [currentView, setCurrentView] = useState<NavView>('home');
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
 
@@ -97,7 +125,11 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [showDesktopModal, setShowDesktopModal] = useState(false);
-  const [initialSaleType, setInitialSaleType] = useState<'sale_invoice' | 'delivery_challan'>('sale_invoice');
+  const [initialSaleType, setInitialSaleType] = useState<
+    'sale_invoice' | 'delivery_challan' | 'estimate' | 'job_work_out' | 'job_work_in'
+  >('sale_invoice');
+  const [deepLinkPartyId, setDeepLinkPartyId] = useState<string | null>(null);
+  const [deepLinkItemId, setDeepLinkItemId] = useState<string | null>(null);
   const [dbError, setDbError] = useState<string | null>(null);
 
   // Refresh metrics from IndexedDB
@@ -127,8 +159,19 @@ export default function App() {
 
         setBusinessProfile(profile);
         if (profile) {
-          const data = await getDashboardMetrics(selectedPeriod);
-          if (isMounted) setMetrics(data);
+          const [data, settings] = await Promise.all([
+            getDashboardMetrics(selectedPeriod),
+            getAppSettings(),
+          ]);
+          if (isMounted) {
+            setMetrics(data);
+            setAppSettings(settings);
+            applyDarkModeClass(Boolean(settings.darkMode));
+            const currentId = getActiveFirmId();
+            updateFirmMeta(currentId, { name: profile.businessName, gstin: profile.gstin });
+            setFirmsList(getFirmsList());
+            setActiveFirmId(currentId);
+          }
         }
       } catch (err: any) {
         console.error('Failed to initialize database:', err);
@@ -158,7 +201,54 @@ export default function App() {
   // Setup completion handler
   const handleSetupComplete = async (profile: BusinessProfile) => {
     setBusinessProfile(profile);
+    const settings = await getAppSettings();
+    setAppSettings(settings);
+    applyDarkModeClass(Boolean(settings.darkMode));
+    const currentId = getActiveFirmId();
+    updateFirmMeta(currentId, { name: profile.businessName, gstin: profile.gstin });
+    setFirmsList(getFirmsList());
+    setActiveFirmId(currentId);
     await refreshMetrics(selectedPeriod);
+  };
+
+  // Multi-firm switch & creation handlers
+  const handleSwitchFirm = async (firmId: string) => {
+    if (firmId === activeFirmId) return;
+    try {
+      await switchActiveFirmDB(firmId);
+      const [profile, settings] = await Promise.all([getBusinessProfile(), getAppSettings()]);
+      setBusinessProfile(profile);
+      setAppSettings(settings);
+      applyDarkModeClass(Boolean(settings.darkMode));
+      setFirmsList(getFirmsList());
+      setActiveFirmId(firmId);
+      setDeepLinkPartyId(null);
+      setDeepLinkItemId(null);
+      setCurrentView('home');
+      if (profile) {
+        await refreshMetrics(selectedPeriod);
+      }
+      showToast(`Switched active firm to ${profile?.businessName || 'selected firm'}`, 'success');
+    } catch (err: any) {
+      showToast(err?.message || 'Failed to switch business firm', 'error');
+    }
+  };
+
+  const handleFirmCreated = async () => {
+    const [profile, settings] = await Promise.all([getBusinessProfile(), getAppSettings()]);
+    const currentId = getActiveFirmId();
+    setBusinessProfile(profile);
+    setAppSettings(settings);
+    applyDarkModeClass(Boolean(settings.darkMode));
+    setFirmsList(getFirmsList());
+    setActiveFirmId(currentId);
+    setDeepLinkPartyId(null);
+    setDeepLinkItemId(null);
+    setCurrentView('home');
+    if (profile) {
+      await refreshMetrics(selectedPeriod);
+    }
+    showToast(`Created and switched to ${profile?.businessName || 'new firm'}`, 'success');
   };
 
   // Transaction view & actions
@@ -167,11 +257,13 @@ export default function App() {
     setShowInvoicePrint(true);
   };
 
-  const handleCancelTransaction = (tx: Transaction) => {
+  const handleCancelTransaction = async (tx: Transaction) => {
+    if (!(await requirePin(`Enter PIN to cancel ${tx.invoiceNo}`))) return;
     setTxToCancel(tx);
   };
 
-  const handleDeleteTransaction = (tx: Transaction) => {
+  const handleDeleteTransaction = async (tx: Transaction) => {
+    if (!(await requirePin(`Enter PIN to delete ${tx.invoiceNo}`))) return;
     setTxToDelete(tx);
   };
 
@@ -205,12 +297,16 @@ export default function App() {
     }
   };
 
-  // Comprehensive Desktop Keyboard shortcuts
+  // Request persistent IndexedDB storage on mount
   useEffect(() => {
-    // Request storage persistence for offline reliability
     if (navigator.storage && navigator.storage.persist) {
       navigator.storage.persist().catch(() => {});
     }
+  }, []);
+
+  // Comprehensive Desktop Keyboard shortcuts
+  useEffect(() => {
+    const extendedEnabled = appSettings?.enableExtendedShortcuts !== false;
 
     const handleKeyDown = (e: KeyboardEvent) => {
       const isInput = ['INPUT', 'TEXTAREA', 'SELECT'].includes((e.target as HTMLElement).tagName);
@@ -219,6 +315,29 @@ export default function App() {
       if (e.key === 'F1' || (!isInput && e.key === '?')) {
         e.preventDefault();
         setShowShortcuts((prev) => !prev);
+        return;
+      }
+
+      // Ctrl + N -> New Sale Invoice (Extended Shortcut)
+      if (extendedEnabled && (e.ctrlKey || e.metaKey) && (e.key === 'n' || e.key === 'N')) {
+        e.preventDefault();
+        setSelectedPartyForSale(undefined);
+        setSelectedTxForEdit(null);
+        setInitialSaleType('sale_invoice');
+        setShowAddSale(true);
+        return;
+      }
+
+      // Ctrl + P -> Print active invoice preview (Extended Shortcut)
+      if (
+        extendedEnabled &&
+        (e.ctrlKey || e.metaKey) &&
+        (e.key === 'p' || e.key === 'P') &&
+        showInvoicePrint &&
+        selectedTxForPrint
+      ) {
+        e.preventDefault();
+        window.print();
         return;
       }
 
@@ -250,8 +369,11 @@ export default function App() {
         return;
       }
 
-      // '/' or Ctrl + K -> Search
-      if ((!isInput && e.key === '/') || ((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'K'))) {
+      // '/' or Ctrl + K or Ctrl + F -> Open Anything Search
+      if (
+        (!isInput && e.key === '/') ||
+        ((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'K' || e.key === 'f' || e.key === 'F'))
+      ) {
         e.preventDefault();
         setShowGlobalSearch(true);
         return;
@@ -290,7 +412,7 @@ export default function App() {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, []);
+  }, [appSettings?.enableExtendedShortcuts, showInvoicePrint, selectedTxForPrint]);
 
   // Electron Desktop Native Menu IPC Listeners
   useEffect(() => {
@@ -345,24 +467,25 @@ export default function App() {
     };
   }, []);
 
-  // View titles
+  // View titles (translated via LanguageContext)
   const viewTitles: Record<NavView, string> = {
-    home: 'Home Dashboard',
-    parties: 'Parties',
-    whatsapp_connect: 'Parties · WhatsApp Connect',
-    items: 'Items & Inventory',
-    sales: 'Sale Invoices',
-    estimates: 'Estimates & Quotations',
-    payments_in: 'Payment-In Receipts',
-    sale_returns: 'Sale Returns · Credit Notes',
-    delivery_challans: 'Delivery Challans',
-    purchases: 'Purchase Bills',
-    payments_out: 'Payment-Out Vouchers',
-    expenses: 'Operating Expenses',
-    purchase_returns: 'Purchase Returns · Debit Notes',
-    reports: 'Reports',
-    sync_backup: 'Sync, Share & Backup',
-    settings: 'Settings',
+    home: t('titles.home', 'Home Dashboard'),
+    parties: t('titles.parties', 'Parties'),
+    whatsapp_connect: t('titles.whatsapp_connect', 'Parties · WhatsApp Connect'),
+    items: t('titles.items', 'Items & Inventory'),
+    sales: t('titles.sales', 'Sale Invoices'),
+    estimates: t('titles.estimates', 'Estimates & Quotations'),
+    payments_in: t('titles.payments_in', 'Payment-In Receipts'),
+    sale_returns: t('titles.sale_returns', 'Sale Returns · Credit Notes'),
+    delivery_challans: t('titles.delivery_challans', 'Delivery Challans'),
+    job_work: t('titles.job_work', 'Job Work Challans (Out & In)'),
+    purchases: t('titles.purchases', 'Purchase Bills'),
+    payments_out: t('titles.payments_out', 'Payment-Out Vouchers'),
+    expenses: t('titles.expenses', 'Operating Expenses'),
+    purchase_returns: t('titles.purchase_returns', 'Purchase Returns · Debit Notes'),
+    reports: t('titles.reports', 'Reports'),
+    sync_backup: t('titles.sync_backup', 'Sync, Share & Backup'),
+    settings: t('titles.settings', 'Settings'),
   };
 
   // Loading state
@@ -414,6 +537,8 @@ export default function App() {
       <Sidebar
         currentView={currentView}
         onNavigate={(view) => {
+          setDeepLinkPartyId(null);
+          setDeepLinkItemId(null);
           if (view === 'sync_backup') {
             setCurrentView('sync_backup');
           } else if (view === 'settings') {
@@ -429,6 +554,7 @@ export default function App() {
         onOpenAddSale={() => {
           setSelectedPartyForSale(undefined);
           setSelectedTxForEdit(null);
+          setInitialSaleType('sale_invoice');
           setShowAddSale(true);
         }}
         onOpenAddPurchase={() => {
@@ -436,9 +562,16 @@ export default function App() {
           setShowAddPurchase(true);
         }}
         onOpenBusinessProfile={() => setShowBusinessProfileModal(true)}
+        onOpenGlobalSearch={() => setShowGlobalSearch(true)}
         businessProfile={businessProfile}
         isCollapsed={isSidebarCollapsed}
         onToggleCollapse={() => setIsSidebarCollapsed(!isSidebarCollapsed)}
+        enableJobWork={Boolean(appSettings?.enableJobWork)}
+        enableMultipleFirms={Boolean(appSettings?.enableMultipleFirms)}
+        firmsList={firmsList}
+        activeFirmId={activeFirmId}
+        onSwitchFirm={handleSwitchFirm}
+        onOpenCreateFirm={() => setShowCreateFirm(true)}
       />
 
       {/* Main View Area */}
@@ -449,6 +582,7 @@ export default function App() {
           onOpenAddSale={() => {
             setSelectedPartyForSale(undefined);
             setSelectedTxForEdit(null);
+            setInitialSaleType('sale_invoice');
             setShowAddSale(true);
           }}
           onOpenAddPurchase={() => {
@@ -474,11 +608,13 @@ export default function App() {
             <div className="h-full overflow-y-auto">
               <HomeView
                 metrics={metrics}
+                businessProfile={businessProfile}
                 selectedPeriod={selectedPeriod}
                 onPeriodChange={handlePeriodChange}
                 onOpenAddSale={() => {
                   setSelectedPartyForSale(undefined);
                   setSelectedTxForEdit(null);
+                  setInitialSaleType('sale_invoice');
                   setShowAddSale(true);
                 }}
                 onOpenAddPurchase={() => {
@@ -492,6 +628,7 @@ export default function App() {
                   setActiveReportType(rep as ReportType);
                   setCurrentView('reports');
                 }}
+                onNavigateToItems={() => setCurrentView('items')}
               />
             </div>
           )}
@@ -499,9 +636,11 @@ export default function App() {
           {currentView === 'parties' && (
             <PartiesView
               businessProfile={businessProfile}
+              initialSelectedPartyId={deepLinkPartyId}
               onOpenAddSaleForParty={(party) => {
                 setSelectedPartyForSale(party.id);
                 setSelectedTxForEdit(null);
+                setInitialSaleType('sale_invoice');
                 setShowAddSale(true);
               }}
               onOpenAddPurchaseForParty={() => {
@@ -511,6 +650,17 @@ export default function App() {
               onViewTransaction={handleViewTransaction}
               onEditSale={(tx) => {
                 setSelectedTxForEdit(tx);
+                setInitialSaleType(
+                  tx.type === 'estimate'
+                    ? 'estimate'
+                    : tx.type === 'delivery_challan'
+                    ? 'delivery_challan'
+                    : tx.type === 'job_work_out'
+                    ? 'job_work_out'
+                    : tx.type === 'job_work_in'
+                    ? 'job_work_in'
+                    : 'sale_invoice'
+                );
                 setShowAddSale(true);
               }}
               onEditPurchase={(tx) => {
@@ -523,21 +673,24 @@ export default function App() {
 
           {currentView === 'items' && (
             <ItemsView
+              initialSelectedItemId={deepLinkItemId}
               onViewTransaction={handleViewTransaction}
               onRefreshMetrics={() => refreshMetrics(selectedPeriod)}
             />
           )}
 
-          {(currentView === 'sales' || currentView === 'estimates') && (
+          {currentView === 'sales' && (
             <SalesView
               businessProfile={businessProfile}
               onOpenAddSale={() => {
                 setSelectedPartyForSale(undefined);
                 setSelectedTxForEdit(null);
+                setInitialSaleType('sale_invoice');
                 setShowAddSale(true);
               }}
               onEditSale={(tx) => {
                 setSelectedTxForEdit(tx);
+                setInitialSaleType('sale_invoice');
                 setShowAddSale(true);
               }}
               onViewInvoice={handleViewTransaction}
@@ -558,6 +711,26 @@ export default function App() {
                 setReturnModalMode('sale_return');
                 setShowReturnModal(true);
               }}
+              onRefreshMetrics={() => refreshMetrics(selectedPeriod)}
+            />
+          )}
+
+          {currentView === 'estimates' && (
+            <EstimatesView
+              businessProfile={businessProfile}
+              onOpenCreateEstimate={() => {
+                setSelectedPartyForSale(undefined);
+                setSelectedTxForEdit(null);
+                setInitialSaleType('estimate');
+                setShowAddSale(true);
+              }}
+              onEditEstimate={(tx) => {
+                setSelectedTxForEdit(tx);
+                setInitialSaleType('estimate');
+                setShowAddSale(true);
+              }}
+              onViewEstimate={handleViewTransaction}
+              onNavigateToSales={() => setCurrentView('sales')}
               onRefreshMetrics={() => refreshMetrics(selectedPeriod)}
             />
           )}
@@ -607,6 +780,14 @@ export default function App() {
             <DeliveryChallansView
               businessProfile={businessProfile}
               onNavigateToSales={() => setCurrentView('sales')}
+              onViewChallanPrint={handleViewTransaction}
+              onRefreshMetrics={() => refreshMetrics(selectedPeriod)}
+            />
+          )}
+
+          {currentView === 'job_work' && (
+            <JobWorkView
+              businessProfile={businessProfile}
               onViewChallanPrint={handleViewTransaction}
               onRefreshMetrics={() => refreshMetrics(selectedPeriod)}
             />
@@ -712,12 +893,23 @@ export default function App() {
             <SyncBackupView
               businessProfile={businessProfile}
               onDataRestored={async () => {
-                const profile = await getBusinessProfile();
+                const [profile, settings] = await Promise.all([
+                  getBusinessProfile(),
+                  getAppSettings(),
+                ]);
                 setBusinessProfile(profile);
+                setAppSettings(settings);
+                applyDarkModeClass(Boolean(settings.darkMode));
+                if (profile) {
+                  updateFirmMeta(activeFirmId, { name: profile.businessName, gstin: profile.gstin });
+                }
+                setFirmsList(getFirmsList());
                 await refreshMetrics(selectedPeriod);
               }}
               onFactoryReset={async () => {
                 setBusinessProfile(null);
+                setAppSettings(null);
+                applyDarkModeClass(false);
                 setCurrentView('home');
               }}
             />
@@ -726,7 +918,16 @@ export default function App() {
           {currentView === 'settings' && (
             <SettingsView
               businessProfile={businessProfile}
-              onProfileUpdated={(updated) => setBusinessProfile(updated)}
+              onProfileUpdated={(updated) => {
+                setBusinessProfile(updated);
+                updateFirmMeta(activeFirmId, { name: updated.businessName, gstin: updated.gstin });
+                setFirmsList(getFirmsList());
+              }}
+              onSettingsUpdated={(updated) => {
+                setAppSettings(updated);
+                applyDarkModeClass(Boolean(updated.darkMode));
+                setFirmsList(getFirmsList());
+              }}
             />
           )}
         </main>
@@ -830,11 +1031,15 @@ export default function App() {
           isOpen={showBusinessProfileModal}
           onClose={() => setShowBusinessProfileModal(false)}
           profile={businessProfile}
-          onUpdate={(updated) => setBusinessProfile(updated)}
+          onUpdate={(updated) => {
+            setBusinessProfile(updated);
+            updateFirmMeta(activeFirmId, { name: updated.businessName, gstin: updated.gstin });
+            setFirmsList(getFirmsList());
+          }}
         />
       )}
 
-      {/* 5. Global Search Transactions Modal */}
+      {/* 5. Open Anything (Ctrl+F) Global Search Modal */}
       <GlobalSearchModal
         isOpen={showGlobalSearch}
         onClose={() => {
@@ -843,6 +1048,19 @@ export default function App() {
         }}
         initialQuery={searchQuery}
         onSelectTransaction={(tx) => handleViewTransaction(tx)}
+        onSelectParty={(party) => {
+          setDeepLinkPartyId(party.id);
+          setCurrentView('parties');
+        }}
+        onSelectItem={(item) => {
+          setDeepLinkItemId(item.id);
+          setCurrentView('items');
+        }}
+        onNavigate={(view) => {
+          setDeepLinkPartyId(null);
+          setDeepLinkItemId(null);
+          setCurrentView(view);
+        }}
       />
 
       {/* Confirm Delete Modal */}
@@ -885,7 +1103,16 @@ export default function App() {
         isOpen={showSettings}
         onClose={() => setShowSettings(false)}
         businessProfile={businessProfile}
-        onProfileUpdated={(updated) => setBusinessProfile(updated)}
+        onProfileUpdated={(updated) => {
+          setBusinessProfile(updated);
+          updateFirmMeta(activeFirmId, { name: updated.businessName, gstin: updated.gstin });
+          setFirmsList(getFirmsList());
+        }}
+        onSettingsUpdated={(updated) => {
+          setAppSettings(updated);
+          applyDarkModeClass(Boolean(updated.darkMode));
+          setFirmsList(getFirmsList());
+        }}
       />
 
       {/* 9. Keyboard Shortcuts Cheat Sheet Modal */}
@@ -898,6 +1125,13 @@ export default function App() {
       <DesktopAppModal
         isOpen={showDesktopModal}
         onClose={() => setShowDesktopModal(false)}
+      />
+
+      {/* 11. Multi-Firm Creation Modal */}
+      <CreateFirmModal
+        isOpen={showCreateFirm}
+        onClose={() => setShowCreateFirm(false)}
+        onFirmCreated={handleFirmCreated}
       />
     </div>
   );

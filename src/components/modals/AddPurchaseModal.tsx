@@ -1,9 +1,15 @@
 import React, { useState, useEffect } from 'react';
-import { X, Plus, Trash2, UserPlus, PackagePlus, AlertCircle, Upload, ShoppingBag } from 'lucide-react';
-import { BusinessProfile, Item, Party, PaymentType, Transaction, TransactionItem } from '../../types';
+import { X, Plus, Trash2, UserPlus, PackagePlus, AlertCircle, ShoppingBag, ScanBarcode } from 'lucide-react';
+import { AppSettings, BusinessProfile, Item, Party, PaymentType, Transaction, TransactionItem } from '../../types';
 import { INDIAN_STATES, GST_RATES, STANDARD_UNITS } from '../../types/indianStates';
-import { getItems, getParties, saveTransaction } from '../../db/indexedDB';
+import { getItems, getParties, saveTransaction, getAppSettings } from '../../db/indexedDB';
 import { calculateTax, formatINR, getTodayISO } from '../../utils/formatters';
+import {
+  isWeightUnit,
+  getCompatibleUnits,
+  convertWeightQty,
+  calculateConvertedUnitPrice,
+} from '../../utils/unitConversion';
 import { ConfirmDiscardModal } from '../common/ConfirmDiscardModal';
 import { QuickAddPartyModal } from './QuickAddPartyModal';
 import { QuickAddItemModal } from './QuickAddItemModal';
@@ -27,6 +33,9 @@ export const AddPurchaseModal: React.FC<AddPurchaseModalProps> = ({
 }) => {
   const [parties, setParties] = useState<Party[]>([]);
   const [itemsList, setItemsList] = useState<Item[]>([]);
+  const [appSettings, setAppSettings] = useState<AppSettings | null>(null);
+  const [barcodeInput, setBarcodeInput] = useState('');
+  const [barcodeFeedback, setBarcodeFeedback] = useState<{ text: string; ok: boolean } | null>(null);
 
   // Bill headers
   const [paymentType, setPaymentType] = useState<PaymentType>('credit');
@@ -132,6 +141,9 @@ export const AddPurchaseModal: React.FC<AddPurchaseModalProps> = ({
           `${businessProfile.purchasePrefix || 'PUR-'}${String(businessProfile.nextPurchaseNumber || 1).padStart(4, '0')}`
         );
       }
+      getAppSettings().then(setAppSettings);
+      setBarcodeInput('');
+      setBarcodeFeedback(null);
       setIsDirty(false);
     }
   }, [isOpen, businessProfile, transactionToEdit]);
@@ -201,6 +213,9 @@ export const AddPurchaseModal: React.FC<AddPurchaseModalProps> = ({
         unit: item.unit,
         priceUnit: item.purchasePrice || item.salePrice,
         taxRate: item.taxRate,
+        batchNumber: item.batchNumber || updated[index].batchNumber || '',
+        serialNumber: item.serialNumber || updated[index].serialNumber || '',
+        expiryDate: item.expiryDate || updated[index].expiryDate || '',
       };
     } else {
       updated[index] = {
@@ -215,13 +230,92 @@ export const AddPurchaseModal: React.FC<AddPurchaseModalProps> = ({
     recalculateRow(updated, index);
   };
 
+  // Barcode / Item Code quick lookup handler for Purchases
+  const handleBarcodeLookup = () => {
+    const code = barcodeInput.trim().toLowerCase();
+    if (!code) return;
+    const match = itemsList.find(
+      (i) =>
+        (i.barcode && i.barcode.toLowerCase() === code) ||
+        (i.itemCode && i.itemCode.toLowerCase() === code)
+    );
+    if (!match) {
+      setBarcodeFeedback({ text: `No item found for barcode "${barcodeInput.trim()}"`, ok: false });
+      return;
+    }
+
+    setIsDirty(true);
+    const updated = [...rows];
+    const existingIdx = updated.findIndex(
+      (r) => String(r.itemId) === String(match.id) && r.unit === match.unit
+    );
+
+    if (existingIdx >= 0) {
+      updated[existingIdx] = {
+        ...updated[existingIdx],
+        qty: (Number(updated[existingIdx].qty) || 0) + 1,
+      };
+      recalculateRow(updated, existingIdx);
+      setBarcodeFeedback({ text: `+1 Qty added for ${match.name}`, ok: true });
+    } else {
+      const emptyIdx = updated.findIndex((r) => !r.itemId && !r.name.trim());
+      if (emptyIdx >= 0) {
+        updated[emptyIdx] = {
+          ...updated[emptyIdx],
+          itemId: match.id,
+          name: match.name,
+          hsn: match.hsn,
+          unit: match.unit,
+          priceUnit: match.purchasePrice || match.salePrice,
+          taxRate: match.taxRate,
+          batchNumber: match.batchNumber || '',
+          serialNumber: match.serialNumber || '',
+          expiryDate: match.expiryDate || '',
+        };
+        recalculateRow(updated, emptyIdx);
+      } else {
+        const newRow: TransactionItem = {
+          id: `row_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
+          itemId: match.id,
+          name: match.name,
+          hsn: match.hsn,
+          qty: 1,
+          freeQty: 0,
+          unit: match.unit,
+          priceUnit: match.purchasePrice || match.salePrice,
+          taxRate: match.taxRate,
+          taxAmount: 0,
+          discountAmount: 0,
+          totalAmount: 0,
+          batchNumber: match.batchNumber || '',
+          serialNumber: match.serialNumber || '',
+          expiryDate: match.expiryDate || '',
+        };
+        updated.push(newRow);
+        recalculateRow(updated, updated.length - 1);
+      }
+      setBarcodeFeedback({ text: `Added ${match.name}`, ok: true });
+    }
+    setBarcodeInput('');
+  };
+
   const handleRowChange = (index: number, field: keyof TransactionItem, value: unknown) => {
     setIsDirty(true);
     const updated = [...rows];
+    const prevRow = updated[index];
     updated[index] = {
-      ...updated[index],
+      ...prevRow,
       [field]: value,
     };
+
+    if (field === 'unit' && appSettings?.enableWeightUnits && prevRow.itemId) {
+      const baseItem = itemsList.find((i) => String(i.id) === String(prevRow.itemId));
+      if (baseItem && isWeightUnit(baseItem.unit) && isWeightUnit(String(value))) {
+        const basePrice = baseItem.purchasePrice || baseItem.salePrice;
+        updated[index].priceUnit = calculateConvertedUnitPrice(basePrice, baseItem.unit, String(value));
+      }
+    }
+
     recalculateRow(updated, index);
   };
 
@@ -374,11 +468,11 @@ export const AddPurchaseModal: React.FC<AddPurchaseModalProps> = ({
     }
   };
 
-  // In-modal Keyboard shortcuts (Ctrl+Enter to Save, Alt+A to Add Row, Esc to Close)
+  // In-modal Keyboard shortcuts (Ctrl+Enter or Ctrl+S to Save, Alt+A to Add Row, Esc to Close)
   useEffect(() => {
     if (!isOpen) return;
     const handleModalKeyDown = (e: KeyboardEvent) => {
-      if (e.ctrlKey && e.key === 'Enter') {
+      if (e.ctrlKey && (e.key === 'Enter' || e.key === 's' || e.key === 'S')) {
         e.preventDefault();
         handleSave();
       } else if (e.altKey && (e.key === 'a' || e.key === 'A')) {
@@ -597,8 +691,46 @@ export const AddPurchaseModal: React.FC<AddPurchaseModalProps> = ({
 
             {/* Line Items Grid */}
             <div className="border border-slate-200 rounded-xl overflow-hidden shadow-2xs">
-              <div className="bg-slate-100 px-4 py-2.5 flex items-center justify-between border-b border-slate-200">
+              <div className="bg-slate-100 px-4 py-2.5 flex flex-wrap items-center justify-between gap-2 border-b border-slate-200">
                 <span className="text-xs font-bold text-slate-800 uppercase tracking-wider">Purchased Items</span>
+
+                {appSettings?.enableBarcode && (
+                  <div className="flex items-center gap-1.5 flex-1 max-w-sm">
+                    <div className="relative flex-1">
+                      <ScanBarcode className="w-3.5 h-3.5 text-blue-600 absolute left-2.5 top-1/2 -translate-y-1/2" />
+                      <input
+                        type="text"
+                        value={barcodeInput}
+                        onChange={(e) => setBarcodeInput(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault();
+                            handleBarcodeLookup();
+                          }
+                        }}
+                        placeholder="Scan or type barcode / SKU + Enter..."
+                        className="w-full pl-8 pr-2.5 py-1 text-xs bg-white border border-blue-300 rounded-md font-mono focus:outline-hidden focus:ring-1 focus:ring-blue-500"
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleBarcodeLookup}
+                      className="px-2.5 py-1 text-[11px] font-semibold bg-blue-600 hover:bg-blue-700 text-white rounded-md cursor-pointer"
+                    >
+                      Add
+                    </button>
+                    {barcodeFeedback && (
+                      <span
+                        className={`text-[10px] font-semibold whitespace-nowrap ${
+                          barcodeFeedback.ok ? 'text-emerald-700' : 'text-rose-600'
+                        }`}
+                      >
+                        {barcodeFeedback.text}
+                      </span>
+                    )}
+                  </div>
+                )}
+
                 <button
                   type="button"
                   onClick={() => setShowQuickItem(true)}
@@ -652,6 +784,24 @@ export const AddPurchaseModal: React.FC<AddPurchaseModalProps> = ({
                               className="mt-1 w-full px-2 py-1 text-[11px] bg-slate-50 border border-slate-200 rounded-md"
                             />
                           )}
+                          {(appSettings?.enableBatchSerial || appSettings?.enableBatchExpiry) && (
+                            <div className="mt-1 grid grid-cols-2 gap-1">
+                              <input
+                                type="text"
+                                value={row.batchNumber || ''}
+                                onChange={(e) => handleRowChange(idx, 'batchNumber', e.target.value)}
+                                placeholder="Batch No."
+                                className="px-1.5 py-0.5 text-[10px] bg-slate-50 border border-slate-200 rounded font-mono"
+                              />
+                              <input
+                                type="text"
+                                value={row.serialNumber || ''}
+                                onChange={(e) => handleRowChange(idx, 'serialNumber', e.target.value)}
+                                placeholder="Serial No."
+                                className="px-1.5 py-0.5 text-[10px] bg-slate-50 border border-slate-200 rounded font-mono"
+                              />
+                            </div>
+                          )}
                         </td>
                         <td className="py-2 px-3">
                           <input
@@ -670,6 +820,19 @@ export const AddPurchaseModal: React.FC<AddPurchaseModalProps> = ({
                             onChange={(e) => handleRowChange(idx, 'qty', parseFloat(e.target.value) || 0)}
                             className="w-full px-2 py-1.5 text-xs bg-white border border-slate-300 rounded-md font-mono"
                           />
+                          {(() => {
+                            if (!appSettings?.enableWeightUnits || !row.itemId) return null;
+                            const baseItem = itemsList.find((i) => String(i.id) === String(row.itemId));
+                            if (!baseItem || baseItem.unit === row.unit || !isWeightUnit(baseItem.unit) || !isWeightUnit(row.unit)) {
+                              return null;
+                            }
+                            const eqQty = convertWeightQty(Number(row.qty) || 0, row.unit, baseItem.unit);
+                            return (
+                              <div className="text-[9px] text-teal-700 font-mono mt-0.5 whitespace-nowrap">
+                                = {eqQty} {baseItem.unit}
+                              </div>
+                            );
+                          })()}
                         </td>
                         <td className="py-2 px-2.5">
                           <input
@@ -683,17 +846,28 @@ export const AddPurchaseModal: React.FC<AddPurchaseModalProps> = ({
                           />
                         </td>
                         <td className="py-2 px-3">
-                          <select
-                            value={row.unit}
-                            onChange={(e) => handleRowChange(idx, 'unit', e.target.value)}
-                            className="w-full px-1.5 py-1.5 text-xs bg-white border border-slate-300 rounded-md"
-                          >
-                            {STANDARD_UNITS.map((u) => (
-                              <option key={u} value={u}>
-                                {u}
-                              </option>
-                            ))}
-                          </select>
+                          {(() => {
+                            const baseItem = row.itemId
+                              ? itemsList.find((i) => String(i.id) === String(row.itemId))
+                              : undefined;
+                            const unitOptions =
+                              appSettings?.enableWeightUnits && baseItem && isWeightUnit(baseItem.unit)
+                                ? getCompatibleUnits(baseItem.unit)
+                                : STANDARD_UNITS;
+                            return (
+                              <select
+                                value={row.unit}
+                                onChange={(e) => handleRowChange(idx, 'unit', e.target.value)}
+                                className="w-full px-1.5 py-1.5 text-xs bg-white border border-slate-300 rounded-md"
+                              >
+                                {unitOptions.map((u) => (
+                                  <option key={u} value={u}>
+                                    {u}
+                                  </option>
+                                ))}
+                              </select>
+                            );
+                          })()}
                         </td>
                         <td className="py-2 px-3 text-right">
                           <input

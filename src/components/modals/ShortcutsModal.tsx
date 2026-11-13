@@ -26,10 +26,10 @@ export const ShortcutsModal: React.FC<ShortcutsModalProps> = ({ isOpen, onClose 
       title: 'Quick Document Creation',
       icon: <Zap className="w-4 h-4 text-rose-500" />,
       shortcuts: [
-        { keys: ['Alt', 'S'], altKeys: ['F4'], desc: 'Create New Sale Invoice' },
+        { keys: ['Ctrl', 'N'], altKeys: ['Alt', 'S'], desc: 'Create New Sale Invoice' },
         { keys: ['Alt', 'P'], altKeys: ['F5'], desc: 'Create New Purchase Bill' },
         { keys: ['Alt', 'C'], desc: 'Create Delivery Challan' },
-        { keys: ['Ctrl', 'K'], altKeys: ['/'], desc: 'Global Transaction Search' },
+        { keys: ['Ctrl', 'F'], altKeys: ['Ctrl', 'K'], desc: 'Open Anything Global Search' },
         { keys: ['F1'], altKeys: ['?'], desc: 'Open Shortcuts Cheat Sheet' },
       ],
     },
@@ -49,13 +49,13 @@ export const ShortcutsModal: React.FC<ShortcutsModalProps> = ({ isOpen, onClose 
       ],
     },
     {
-      title: 'In-Form Shortcuts (Invoice & Modals)',
+      title: 'In-Form & Print Shortcuts',
       icon: <CornerDownLeft className="w-4 h-4 text-emerald-500" />,
       shortcuts: [
-        { keys: ['Ctrl', 'Enter'], desc: 'Save & Generate Invoice / Bill' },
-        { keys: ['Alt', 'N'], desc: 'Save & Create New' },
+        { keys: ['Ctrl', 'S'], altKeys: ['Ctrl', 'Enter'], desc: 'Save Invoice / Bill / Item' },
+        { keys: ['Ctrl', 'P'], desc: 'Print Open Invoice Preview' },
         { keys: ['Alt', 'A'], desc: 'Add Line Item Row' },
-        { keys: ['Esc'], desc: 'Dismiss Dialog or Menu' },
+        { keys: ['Esc'], desc: 'Close Modal or Dialog' },
       ],
     },
   ];

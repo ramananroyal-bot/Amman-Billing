@@ -1,6 +1,6 @@
 import React from 'react';
 import { X } from 'lucide-react';
-import { BusinessProfile } from '../../types';
+import { AppSettings, BusinessProfile } from '../../types';
 import { SettingsView } from '../settings/SettingsView';
 
 interface SettingsModalProps {
@@ -8,6 +8,7 @@ interface SettingsModalProps {
   onClose: () => void;
   businessProfile?: BusinessProfile | null;
   onProfileUpdated?: (updated: BusinessProfile) => void;
+  onSettingsUpdated?: (updated: AppSettings) => void;
 }
 
 export const SettingsModal: React.FC<SettingsModalProps> = ({
@@ -15,6 +16,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   onClose,
   businessProfile = null,
   onProfileUpdated,
+  onSettingsUpdated,
 }) => {
   if (!isOpen) return null;
 
@@ -32,6 +34,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           <SettingsView
             businessProfile={businessProfile}
             onProfileUpdated={onProfileUpdated}
+            onSettingsUpdated={onSettingsUpdated}
           />
         </div>
       </div>

@@ -72,6 +72,8 @@ export const STANDARD_UNITS = [
   'BAG',
   'KG',
   'GM',
+  'QUINTAL',
+  'TONNE',
   'LTR',
   'MTR',
   'SQF',

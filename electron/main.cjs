@@ -4,7 +4,35 @@ const fs = require('fs');
 
 let mainWindow = null;
 
+// Set Windows Application User Model ID so taskbar pinning and notifications group properly
+if (process.platform === 'win32') {
+  app.setAppUserModelId('com.amman.billing');
+}
+
+// Enforce single instance so two windows never contend over the local IndexedDB folder
+const gotTheLock = app.requestSingleInstanceLock();
+if (!gotTheLock) {
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.focus();
+    }
+  });
+}
+
+function resolveAppIcon() {
+  const candidates = [
+    path.join(__dirname, '..', 'dist', 'icon-512.png'),
+    path.join(__dirname, '..', 'public', 'icon-512.png'),
+  ];
+  return candidates.find((p) => fs.existsSync(p));
+}
+
 function createWindow() {
+  const iconPath = resolveAppIcon();
+
   mainWindow = new BrowserWindow({
     width: 1400,
     height: 900,
@@ -12,6 +40,7 @@ function createWindow() {
     minHeight: 700,
     title: 'Amman Billing & Accounting',
     backgroundColor: '#0f172a',
+    icon: iconPath,
     show: false,
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
@@ -22,24 +51,35 @@ function createWindow() {
     },
   });
 
-  // Maximize by default for a true desktop accounting experience
+  // Maximize window on launch for desktop billing workflow
   mainWindow.maximize();
 
-  // Load production dist if available, else local server
+  const useDevServer = process.argv.includes('--dev') || process.env.ELECTRON_DEV === 'true';
   const distPath = path.join(__dirname, '..', 'dist', 'index.html');
-  if (fs.existsSync(distPath)) {
+
+  if (!useDevServer && fs.existsSync(distPath)) {
     mainWindow.loadFile(distPath);
   } else {
-    mainWindow.loadURL('http://localhost:3000');
+    mainWindow.loadURL('http://localhost:3000').catch(() => {
+      dialog.showErrorBox(
+        'Amman Billing - Startup Error',
+        'Production build (dist/index.html) was not found and the local dev server (http://localhost:3000) is not running. Run "npm run build" first.'
+      );
+    });
   }
 
   mainWindow.once('ready-to-show', () => {
     mainWindow.show();
   });
 
-  // Open external links in default browser
+  // Open WhatsApp Web links and external portals in the system browser
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (url.startsWith('http:') || url.startsWith('https:') || url.startsWith('mailto:') || url.startsWith('tel:') || url.startsWith('https://wa.me')) {
+    if (
+      url.startsWith('http:') ||
+      url.startsWith('https:') ||
+      url.startsWith('mailto:') ||
+      url.startsWith('tel:')
+    ) {
       shell.openExternal(url);
       return { action: 'deny' };
     }
@@ -85,9 +125,8 @@ function setupAppMenu() {
         { type: 'separator' },
         {
           label: 'Print Active Document',
-          accelerator: 'Ctrl+P',
           click: () => {
-            mainWindow?.webContents.print();
+            mainWindow?.webContents.print({ printBackground: true });
           },
         },
         { type: 'separator' },
@@ -112,10 +151,23 @@ function setupAppMenu() {
           accelerator: 'Alt+2',
           click: () => mainWindow?.webContents.send('menu:nav', 'items'),
         },
+        { type: 'separator' },
         {
           label: 'Sale Invoices',
           accelerator: 'Alt+3',
           click: () => mainWindow?.webContents.send('menu:nav', 'sales'),
+        },
+        {
+          label: 'Estimates & Quotations',
+          click: () => mainWindow?.webContents.send('menu:nav', 'estimates'),
+        },
+        {
+          label: 'Payment-In Receipts',
+          click: () => mainWindow?.webContents.send('menu:nav', 'payments_in'),
+        },
+        {
+          label: 'Sale Returns (Credit Notes)',
+          click: () => mainWindow?.webContents.send('menu:nav', 'sale_returns'),
         },
         {
           label: 'Delivery Challans',
@@ -123,12 +175,30 @@ function setupAppMenu() {
           click: () => mainWindow?.webContents.send('menu:nav', 'delivery_challans'),
         },
         {
+          label: 'Job Work Challans (Out & In)',
+          click: () => mainWindow?.webContents.send('menu:nav', 'job_work'),
+        },
+        { type: 'separator' },
+        {
           label: 'Purchase Bills',
           accelerator: 'Alt+5',
           click: () => mainWindow?.webContents.send('menu:nav', 'purchases'),
         },
         {
-          label: 'GST & Reports',
+          label: 'Payment-Out Vouchers',
+          click: () => mainWindow?.webContents.send('menu:nav', 'payments_out'),
+        },
+        {
+          label: 'Business Expenses',
+          click: () => mainWindow?.webContents.send('menu:nav', 'expenses'),
+        },
+        {
+          label: 'Purchase Returns (Debit Notes)',
+          click: () => mainWindow?.webContents.send('menu:nav', 'purchase_returns'),
+        },
+        { type: 'separator' },
+        {
+          label: 'GST & Audit Reports',
           accelerator: 'Alt+6',
           click: () => mainWindow?.webContents.send('menu:nav', 'reports'),
         },
@@ -144,7 +214,7 @@ function setupAppMenu() {
         },
         { type: 'separator' },
         {
-          label: 'Quick Search',
+          label: 'Quick Search (Open Anything)',
           accelerator: 'Ctrl+K',
           click: () => mainWindow?.webContents.send('menu:search'),
         },
@@ -187,9 +257,9 @@ function setupAppMenu() {
             dialog.showMessageBox(mainWindow, {
               type: 'info',
               title: 'Amman Billing & Accounting',
-              message: 'Amman Billing & Accounting v1.0.0',
+              message: `Amman Billing & Accounting v${app.getVersion()}`,
               detail:
-                'Free, offline-first Vyapar Desktop alternative for Indian businesses. Built with high precision GST tax engines, local IndexedDB persistence, and zero vendor lock-in.',
+                'Offline-first GST billing & accounting application for Indian small businesses. Data is stored privately on your PC in local IndexedDB.',
               buttons: ['OK'],
             });
           },
@@ -217,11 +287,14 @@ ipcMain.handle('file:open-dialog', async (event, options) => {
 });
 
 ipcMain.handle('app:print', async (event, options) => {
-  if (!mainWindow) return false;
+  if (!mainWindow) return { success: false, failureReason: 'No active window' };
   return new Promise((resolve) => {
-    mainWindow.webContents.print(options || {}, (success, failureReason) => {
-      resolve({ success, failureReason });
-    });
+    mainWindow.webContents.print(
+      { printBackground: true, ...(options || {}) },
+      (success, failureReason) => {
+        resolve({ success, failureReason });
+      }
+    );
   });
 });
 

@@ -21,11 +21,28 @@ import {
   Info,
   Check,
   RotateCcw,
+  Languages,
+  Lock,
+  ScanBarcode,
+  Moon,
+  Scale,
+  Wrench,
+  Activity,
+  Keyboard,
 } from 'lucide-react';
 import { AppSettings, BusinessProfile, PaymentType } from '../../types';
 import { getAppSettings, saveAppSettings, getBusinessProfile, saveBusinessProfile } from '../../db/indexedDB';
 import { useToast } from '../common/Toast';
 import { formatINR } from '../../utils/formatters';
+import { useTranslation, AppLanguage, InvoicePrintLanguage } from '../../i18n/LanguageContext';
+import {
+  applyDarkModeClass,
+  getFirmsList,
+  getPasscodeConfig,
+  hashPin,
+  savePasscodeConfig,
+  verifyPasscode,
+} from '../../utils/security';
 
 export type SettingsTab =
   | 'general'
@@ -33,33 +50,51 @@ export type SettingsTab =
   | 'print'
   | 'taxes'
   | 'party_whatsapp'
-  | 'item_inventory';
+  | 'item_inventory'
+  | 'addons_security';
 
 interface SettingsViewProps {
   businessProfile: BusinessProfile | null;
   onProfileUpdated?: (updated: BusinessProfile) => void;
+  onSettingsUpdated?: (updated: AppSettings) => void;
 }
 
 export const SettingsView: React.FC<SettingsViewProps> = ({
   businessProfile,
   onProfileUpdated,
+  onSettingsUpdated,
 }) => {
   const { showToast } = useToast();
+  const { setLanguage, setInvoicePrintLanguage } = useTranslation();
   const [activeTab, setActiveTab] = useState<SettingsTab>('general');
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [profile, setProfile] = useState<BusinessProfile | null>(businessProfile);
   const [isSaving, setIsSaving] = useState(false);
   const [lastSavedTime, setLastSavedTime] = useState<string | null>(null);
 
-  // Form states for business prefixes
+  // Form states for business prefixes & UPI ID
   const [invoicePrefix, setInvoicePrefix] = useState(businessProfile?.invoicePrefix || 'INV-');
   const [nextInvoiceNo, setNextInvoiceNo] = useState(businessProfile?.nextInvoiceNumber || 1);
   const [purchasePrefix, setPurchasePrefix] = useState(businessProfile?.purchasePrefix || 'BILL-');
   const [nextPurchaseNo, setNextPurchaseNo] = useState(businessProfile?.nextPurchaseNumber || 1);
   const [challanPrefix, setChallanPrefix] = useState(businessProfile?.challanPrefix || 'CH-');
   const [nextChallanNo, setNextChallanNo] = useState(businessProfile?.nextChallanNumber || 1);
+  const [estimatePrefix, setEstimatePrefix] = useState(businessProfile?.estimatePrefix || 'EST-');
+  const [nextEstimateNo, setNextEstimateNo] = useState(businessProfile?.nextEstimateNumber || 1);
+  const [jobWorkOutPrefix, setJobWorkOutPrefix] = useState(businessProfile?.jobWorkOutPrefix || 'JWO-');
+  const [nextJobWorkOutNo, setNextJobWorkOutNo] = useState(businessProfile?.nextJobWorkOutNumber || 1);
+  const [jobWorkInPrefix, setJobWorkInPrefix] = useState(businessProfile?.jobWorkInPrefix || 'JWI-');
+  const [nextJobWorkInNo, setNextJobWorkInNo] = useState(businessProfile?.nextJobWorkInNumber || 1);
+  const [upiId, setUpiId] = useState(businessProfile?.bankDetails?.upiId || '');
   const [invoiceTerms, setInvoiceTerms] = useState(businessProfile?.terms || '');
   const [signatoryText, setSignatoryText] = useState(businessProfile?.signatoryText || '');
+
+  // Passcode PIN configuration form state
+  const [hasExistingPin, setHasExistingPin] = useState(() => Boolean(getPasscodeConfig().pinHash));
+  const [currentPinInput, setCurrentPinInput] = useState('');
+  const [newPinInput, setNewPinInput] = useState('');
+  const [confirmPinInput, setConfirmPinInput] = useState('');
+  const [pinError, setPinError] = useState<string | null>(null);
 
   // Load settings and profile
   const loadData = useCallback(async () => {
@@ -75,9 +110,17 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         setNextPurchaseNo(p.nextPurchaseNumber || 1);
         setChallanPrefix(p.challanPrefix || 'CH-');
         setNextChallanNo(p.nextChallanNumber || 1);
+        setEstimatePrefix(p.estimatePrefix || 'EST-');
+        setNextEstimateNo(p.nextEstimateNumber || 1);
+        setJobWorkOutPrefix(p.jobWorkOutPrefix || 'JWO-');
+        setNextJobWorkOutNo(p.nextJobWorkOutNumber || 1);
+        setJobWorkInPrefix(p.jobWorkInPrefix || 'JWI-');
+        setNextJobWorkInNo(p.nextJobWorkInNumber || 1);
+        setUpiId(p.bankDetails?.upiId || '');
         setInvoiceTerms(p.terms || '');
         setSignatoryText(p.signatoryText || '');
       }
+      setHasExistingPin(Boolean(getPasscodeConfig().pinHash));
     } catch (err) {
       console.error('Failed to load settings', err);
     }
@@ -94,6 +137,22 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       setIsSaving(true);
       const updated = await saveAppSettings({ [key]: value });
       setSettings(updated);
+      if (onSettingsUpdated) onSettingsUpdated(updated);
+
+      if (key === 'language') {
+        await setLanguage(value as AppLanguage);
+      } else if (key === 'invoicePrintLanguage') {
+        await setInvoicePrintLanguage(value as InvoicePrintLanguage);
+      } else if (key === 'darkMode') {
+        applyDarkModeClass(Boolean(value));
+      } else if (key === 'enablePasscodeLock') {
+        const currentCfg = getPasscodeConfig();
+        savePasscodeConfig({ ...currentCfg, enabled: Boolean(value) });
+      } else if (key === 'requirePinForEditDelete') {
+        const currentCfg = getPasscodeConfig();
+        savePasscodeConfig({ ...currentCfg, requireForEditDelete: Boolean(value) });
+      }
+
       setLastSavedTime(new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
       showToast('Setting updated', 'info');
     } catch (err: any) {
@@ -115,6 +174,12 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         nextPurchaseNumber: Number(nextPurchaseNo) || 1,
         challanPrefix: challanPrefix.trim().toUpperCase(),
         nextChallanNumber: Number(nextChallanNo) || 1,
+        estimatePrefix: estimatePrefix.trim().toUpperCase(),
+        nextEstimateNumber: Number(nextEstimateNo) || 1,
+        jobWorkOutPrefix: jobWorkOutPrefix.trim().toUpperCase(),
+        nextJobWorkOutNumber: Number(nextJobWorkOutNo) || 1,
+        jobWorkInPrefix: jobWorkInPrefix.trim().toUpperCase(),
+        nextJobWorkInNumber: Number(nextJobWorkInNo) || 1,
         terms: invoiceTerms.trim(),
         signatoryText: signatoryText.trim(),
       });
@@ -127,6 +192,103 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     } finally {
       setIsSaving(false);
     }
+  };
+
+  // Persist UPI ID directly inside Business Profile bank details
+  const handleSaveUpiId = async () => {
+    if (!profile) return;
+    const trimmed = upiId.trim();
+    if (trimmed && !trimmed.includes('@')) {
+      showToast('Enter a valid UPI ID (example: myshop@upi or 9876543210@ybl)', 'error');
+      return;
+    }
+    try {
+      setIsSaving(true);
+      const updated = await saveBusinessProfile({
+        bankDetails: {
+          bankName: profile.bankDetails?.bankName || '',
+          accountNo: profile.bankDetails?.accountNo || '',
+          ifsc: profile.bankDetails?.ifsc || '',
+          branch: profile.bankDetails?.branch || '',
+          upiId: trimmed,
+        },
+      });
+      setProfile(updated);
+      if (onProfileUpdated) onProfileUpdated(updated);
+      showToast(trimmed ? 'UPI ID saved for invoice QR codes' : 'UPI ID cleared', 'success');
+    } catch (err: any) {
+      showToast(err?.message || 'Failed to save UPI ID', 'error');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  // Save or update security PIN (4-8 digits hashed in localStorage)
+  const handleSaveSecurityPin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setPinError(null);
+
+    if (hasExistingPin) {
+      const ok = await verifyPasscode(currentPinInput);
+      if (!ok) {
+        setPinError('Current PIN is incorrect.');
+        return;
+      }
+    }
+
+    if (!/^\d{4,8}$/.test(newPinInput)) {
+      setPinError('New PIN must be 4 to 8 digits.');
+      return;
+    }
+    if (newPinInput !== confirmPinInput) {
+      setPinError('New PIN and confirmation do not match.');
+      return;
+    }
+
+    const hashed = await hashPin(newPinInput);
+    const currentCfg = getPasscodeConfig();
+    savePasscodeConfig({
+      ...currentCfg,
+      pinHash: hashed,
+      enabled: Boolean(settings?.enablePasscodeLock ?? true),
+      requireForEditDelete: Boolean(settings?.requirePinForEditDelete),
+    });
+
+    if (settings && !settings.enablePasscodeLock) {
+      await handleUpdateSetting('enablePasscodeLock', true);
+    }
+
+    setHasExistingPin(true);
+    setCurrentPinInput('');
+    setNewPinInput('');
+    setConfirmPinInput('');
+    showToast('Security PIN saved successfully', 'success');
+  };
+
+  const handleRemovePin = async () => {
+    if (hasExistingPin) {
+      if (!currentPinInput.trim()) {
+        setPinError('Enter your current PIN to remove passcode protection.');
+        return;
+      }
+      const ok = await verifyPasscode(currentPinInput);
+      if (!ok) {
+        setPinError('Current PIN is incorrect.');
+        return;
+      }
+    }
+    savePasscodeConfig({ enabled: false, requireForEditDelete: false, pinHash: '' });
+    setHasExistingPin(false);
+    setCurrentPinInput('');
+    setNewPinInput('');
+    setConfirmPinInput('');
+    setPinError(null);
+    if (settings) {
+      const updated = await saveAppSettings({ enablePasscodeLock: false, requirePinForEditDelete: false });
+      setSettings(updated);
+      if (onSettingsUpdated) onSettingsUpdated(updated);
+    }
+    showToast('Passcode PIN removed', 'info');
   };
 
   // WhatsApp variable chip inserter
@@ -181,6 +343,12 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       label: 'Items & Inventory',
       icon: <Package className="w-4 h-4" />,
       desc: 'Units, Free qty, Batch & Expiry tracking',
+    },
+    {
+      id: 'addons_security',
+      label: 'Optional Features & Security',
+      icon: <Sparkles className="w-4 h-4" />,
+      desc: 'UPI QR, Multi-Firm, PIN, Audit, Barcode, Dark, Job Work',
     },
   ];
 
@@ -268,6 +436,55 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             {/* ========================================================================= */}
             {activeTab === 'general' && (
               <div className="space-y-5">
+                {/* Language Switch & Invoice Heading Language */}
+                <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-2xs space-y-4">
+                  <h3 className="text-sm font-bold text-slate-900 pb-3 border-b border-slate-100 flex items-center gap-2">
+                    <Languages className="w-4 h-4 text-rose-600" />
+                    <span>Application Language &amp; Invoice Print Language</span>
+                  </h3>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    {/* App UI Language */}
+                    <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-200 flex flex-col justify-between">
+                      <div>
+                        <h4 className="text-xs font-bold text-slate-900">Display Language / மொழி</h4>
+                        <p className="text-[11px] text-slate-500 mt-0.5">
+                          Switch menus, buttons, and labels between English and Tamil (தமிழ்).
+                        </p>
+                      </div>
+                      <select
+                        value={settings.language || 'en'}
+                        onChange={(e) => handleUpdateSetting('language', e.target.value as 'en' | 'ta')}
+                        className="mt-3 px-3 py-1.5 text-xs font-semibold bg-white border border-slate-300 rounded-lg text-slate-800 cursor-pointer focus:outline-hidden focus:ring-1 focus:ring-slate-900"
+                      >
+                        <option value="en">English (Standard)</option>
+                        <option value="ta">தமிழ் (Tamil)</option>
+                      </select>
+                    </div>
+
+                    {/* Invoice Print Language */}
+                    <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-200 flex flex-col justify-between">
+                      <div>
+                        <h4 className="text-xs font-bold text-slate-900">Invoice / PDF Print Headings</h4>
+                        <p className="text-[11px] text-slate-500 mt-0.5">
+                          Print invoices with English, Tamil, or Bilingual headings. Tamil item names always print cleanly.
+                        </p>
+                      </div>
+                      <select
+                        value={settings.invoicePrintLanguage || 'en'}
+                        onChange={(e) =>
+                          handleUpdateSetting('invoicePrintLanguage', e.target.value as 'en' | 'ta' | 'bilingual')
+                        }
+                        className="mt-3 px-3 py-1.5 text-xs font-semibold bg-white border border-slate-300 rounded-lg text-slate-800 cursor-pointer focus:outline-hidden focus:ring-1 focus:ring-slate-900"
+                      >
+                        <option value="en">English Only</option>
+                        <option value="ta">Tamil Only (தமிழ்)</option>
+                        <option value="bilingual">Bilingual (English / தமிழ்)</option>
+                      </select>
+                    </div>
+                  </div>
+                </div>
+
                 <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-2xs space-y-4">
                   <h3 className="text-sm font-bold text-slate-900 pb-3 border-b border-slate-100 flex items-center gap-2">
                     <DollarSign className="w-4 h-4 text-rose-600" />
@@ -426,7 +643,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     </button>
                   </div>
 
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
                     {/* 1. Sale Invoice */}
                     <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-200 space-y-2">
                       <div className="flex items-center justify-between">
@@ -515,6 +732,99 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                           min="1"
                           value={nextChallanNo}
                           onChange={(e) => setNextChallanNo(Number(e.target.value))}
+                          className="w-full px-2.5 py-1.5 text-xs font-mono bg-white border border-slate-300 rounded-lg"
+                        />
+                      </div>
+                    </div>
+
+                    {/* 4. Estimate / Quotation */}
+                    <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-200 space-y-2">
+                      <div className="flex items-center justify-between">
+                        <h4 className="text-xs font-bold text-slate-900">Estimates / Quotes</h4>
+                        <span className="text-[10px] font-mono text-amber-600 font-semibold">
+                          Sample: {estimatePrefix}
+                          {nextEstimateNo}
+                        </span>
+                      </div>
+                      <div>
+                        <label className="text-[11px] text-slate-500 block mb-1">Prefix</label>
+                        <input
+                          type="text"
+                          value={estimatePrefix}
+                          onChange={(e) => setEstimatePrefix(e.target.value)}
+                          placeholder="EST-"
+                          className="w-full px-2.5 py-1.5 text-xs font-mono font-bold bg-white border border-slate-300 rounded-lg"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[11px] text-slate-500 block mb-1">Next Number</label>
+                        <input
+                          type="number"
+                          min="1"
+                          value={nextEstimateNo}
+                          onChange={(e) => setNextEstimateNo(Number(e.target.value))}
+                          className="w-full px-2.5 py-1.5 text-xs font-mono bg-white border border-slate-300 rounded-lg"
+                        />
+                      </div>
+                    </div>
+
+                    {/* 5. Job Work Out */}
+                    <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-200 space-y-2">
+                      <div className="flex items-center justify-between">
+                        <h4 className="text-xs font-bold text-slate-900">Job Work Out</h4>
+                        <span className="text-[10px] font-mono text-indigo-600 font-semibold">
+                          Sample: {jobWorkOutPrefix}
+                          {nextJobWorkOutNo}
+                        </span>
+                      </div>
+                      <div>
+                        <label className="text-[11px] text-slate-500 block mb-1">Prefix</label>
+                        <input
+                          type="text"
+                          value={jobWorkOutPrefix}
+                          onChange={(e) => setJobWorkOutPrefix(e.target.value)}
+                          placeholder="JWO-"
+                          className="w-full px-2.5 py-1.5 text-xs font-mono font-bold bg-white border border-slate-300 rounded-lg"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[11px] text-slate-500 block mb-1">Next Number</label>
+                        <input
+                          type="number"
+                          min="1"
+                          value={nextJobWorkOutNo}
+                          onChange={(e) => setNextJobWorkOutNo(Number(e.target.value))}
+                          className="w-full px-2.5 py-1.5 text-xs font-mono bg-white border border-slate-300 rounded-lg"
+                        />
+                      </div>
+                    </div>
+
+                    {/* 6. Job Work In */}
+                    <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-200 space-y-2">
+                      <div className="flex items-center justify-between">
+                        <h4 className="text-xs font-bold text-slate-900">Job Work In</h4>
+                        <span className="text-[10px] font-mono text-teal-600 font-semibold">
+                          Sample: {jobWorkInPrefix}
+                          {nextJobWorkInNo}
+                        </span>
+                      </div>
+                      <div>
+                        <label className="text-[11px] text-slate-500 block mb-1">Prefix</label>
+                        <input
+                          type="text"
+                          value={jobWorkInPrefix}
+                          onChange={(e) => setJobWorkInPrefix(e.target.value)}
+                          placeholder="JWI-"
+                          className="w-full px-2.5 py-1.5 text-xs font-mono font-bold bg-white border border-slate-300 rounded-lg"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[11px] text-slate-500 block mb-1">Next Number</label>
+                        <input
+                          type="number"
+                          min="1"
+                          value={nextJobWorkInNo}
+                          onChange={(e) => setNextJobWorkInNo(Number(e.target.value))}
                           className="w-full px-2.5 py-1.5 text-xs font-mono bg-white border border-slate-300 rounded-lg"
                         />
                       </div>
@@ -767,6 +1077,35 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                           />
                         </div>
                       ))}
+
+                      {/* UPI ID / VPA Configuration */}
+                      <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-200 space-y-2">
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <div className="text-xs font-bold text-slate-900">Merchant UPI ID (VPA) for Dynamic QR</div>
+                            <div className="text-[11px] text-slate-500">
+                              Generates an offline scannable QR on invoices pre-filled with the exact invoice total.
+                            </div>
+                          </div>
+                        </div>
+                        <div className="flex gap-2">
+                          <input
+                            type="text"
+                            value={upiId}
+                            onChange={(e) => setUpiId(e.target.value)}
+                            placeholder="e.g. mybusiness@okicici or 9876543210@ybl"
+                            className="flex-1 px-3 py-1.5 text-xs bg-white border border-slate-300 rounded-lg font-mono"
+                          />
+                          <button
+                            type="button"
+                            onClick={handleSaveUpiId}
+                            disabled={isSaving}
+                            className="px-3 py-1.5 text-xs font-semibold text-white bg-rose-600 hover:bg-rose-700 rounded-lg cursor-pointer disabled:opacity-50"
+                          >
+                            Save UPI
+                          </button>
+                        </div>
+                      </div>
                     </div>
                   </div>
 
@@ -982,11 +1321,11 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             {/* ========================================================================= */}
             {activeTab === 'party_whatsapp' && (
               <div className="space-y-5">
-                {/* Credit Limit Alert Control */}
+                {/* Credit Limit Alert Control & Overdue Reminder Days */}
                 <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-2xs space-y-4">
                   <h3 className="text-sm font-bold text-slate-900 pb-3 border-b border-slate-100 flex items-center gap-2">
                     <Users className="w-4 h-4 text-blue-600" />
-                    <span>Customer Credit Risk Controls</span>
+                    <span>Customer Credit Risk &amp; Overdue Payment Reminders</span>
                   </h3>
 
                   <div className="flex items-center justify-between p-3.5 bg-slate-50 rounded-xl border border-slate-200">
@@ -1003,6 +1342,42 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                       className="w-4 h-4 rounded text-rose-600 focus:ring-rose-500 cursor-pointer"
                     />
                   </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-200 flex flex-col justify-between">
+                      <div>
+                        <h4 className="text-xs font-bold text-slate-900">Default Invoice Due Days</h4>
+                        <p className="text-[11px] text-slate-500 mt-0.5">
+                          Fallback credit period when no explicit due date is entered on a sale invoice.
+                        </p>
+                      </div>
+                      <input
+                        type="number"
+                        min={0}
+                        max={365}
+                        value={settings.defaultDueDays ?? 30}
+                        onChange={(e) => handleUpdateSetting('defaultDueDays', Math.max(0, Number(e.target.value)))}
+                        className="mt-3 px-3 py-1.5 text-xs font-semibold bg-white border border-slate-300 rounded-lg text-slate-800 font-mono"
+                      />
+                    </div>
+
+                    <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-200 flex flex-col justify-between">
+                      <div>
+                        <h4 className="text-xs font-bold text-slate-900">Overdue Reminder Grace Days</h4>
+                        <p className="text-[11px] text-slate-500 mt-0.5">
+                          Show invoices on Home &ldquo;Overdue Payments&rdquo; card once past due date by these many days (0 = immediately).
+                        </p>
+                      </div>
+                      <input
+                        type="number"
+                        min={0}
+                        max={180}
+                        value={settings.overdueReminderDays ?? 0}
+                        onChange={(e) => handleUpdateSetting('overdueReminderDays', Math.max(0, Number(e.target.value)))}
+                        className="mt-3 px-3 py-1.5 text-xs font-semibold bg-white border border-slate-300 rounded-lg text-slate-800 font-mono"
+                      />
+                    </div>
+                  </div>
                 </div>
 
                 {/* WhatsApp Message Template Editor */}
@@ -1011,10 +1386,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     <div>
                       <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
                         <MessageSquare className="w-4 h-4 text-emerald-600" />
-                        <span>WhatsApp & SMS Invoice Template</span>
+                        <span>WhatsApp Transaction Message Template</span>
                       </h3>
                       <p className="text-xs text-slate-500 mt-0.5">
-                        Click tags below to insert dynamic invoice variables into your message
+                        Click tags below to insert dynamic payment reminder &amp; invoice variables
                       </p>
                     </div>
                     <button
@@ -1022,7 +1397,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                       onClick={() =>
                         handleUpdateSetting(
                           'whatsappMessageTemplate',
-                          'Dear Customer, your invoice [Invoice_Number] of [Invoice_Amount] dated [Invoice_Date] from [Firm_Name] is generated. Balance due: [Balance_Due]. Thank you for your business!'
+                          'Dear [Party_Name], gentle reminder from [Firm_Name]: Invoice [Invoice_Number] (Balance: [Transaction_Balance]) was due on [Due_Date]. Please arrange payment. Thank you!'
                         )
                       }
                       className="px-2.5 py-1 text-xs text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded-md transition-colors cursor-pointer flex items-center gap-1"
@@ -1037,11 +1412,13 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     <span className="text-[11px] text-slate-500 font-semibold mr-1">Insert Variable:</span>
                     {[
                       '[Firm_Name]',
+                      '[Party_Name]',
+                      '[Transaction_Balance]',
+                      '[Due_Date]',
                       '[Invoice_Number]',
                       '[Invoice_Amount]',
                       '[Invoice_Date]',
                       '[Balance_Due]',
-                      '[Party_Name]',
                     ].map((tag) => (
                       <button
                         key={tag}
@@ -1070,11 +1447,13 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     <div className="p-3 bg-white rounded-lg border border-emerald-100 shadow-2xs text-xs text-slate-800 whitespace-pre-wrap leading-relaxed">
                       {(settings.whatsappMessageTemplate || '')
                         .replace(/\[Firm_Name\]/g, profile?.businessName || 'ABC Traders')
+                        .replace(/\[Party_Name\]/g, 'Royal Enterprises')
+                        .replace(/\[Transaction_Balance\]/g, '₹ 1,500.00')
+                        .replace(/\[Due_Date\]/g, '15/11/2026')
                         .replace(/\[Invoice_Number\]/g, 'INV-1024')
                         .replace(/\[Invoice_Amount\]/g, '₹ 4,725.00')
                         .replace(/\[Invoice_Date\]/g, '06/11/2026')
-                        .replace(/\[Balance_Due\]/g, '₹ 1,500.00')
-                        .replace(/\[Party_Name\]/g, 'Royal Enterprises')}
+                        .replace(/\[Balance_Due\]/g, '₹ 1,500.00')}
                     </div>
                   </div>
                 </div>
@@ -1169,6 +1548,324 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                         className="w-4 h-4 rounded text-rose-600 focus:ring-rose-500 cursor-pointer"
                       />
                     </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* ========================================================================= */}
+            {/* TAB 7: OPTIONAL FEATURES & SECURITY (ADD-ON C) */}
+            {/* ========================================================================= */}
+            {activeTab === 'addons_security' && (
+              <div className="space-y-5">
+                {/* 1. UPI QR on Invoices */}
+                <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-2xs space-y-4">
+                  <h3 className="text-sm font-bold text-slate-900 pb-3 border-b border-slate-100 flex items-center gap-2">
+                    <QrCode className="w-4 h-4 text-emerald-600" />
+                    <span>1. UPI Payment QR Code on Invoices</span>
+                  </h3>
+                  <div className="flex items-center justify-between p-3.5 bg-slate-50 rounded-xl border border-slate-200">
+                    <div>
+                      <h4 className="text-xs font-bold text-slate-900">Show UPI Payment QR Code on Invoices</h4>
+                      <p className="text-[11px] text-slate-500 mt-0.5">
+                        Automatically builds an offline QR code on A4 &amp; Thermal prints with payee VPA and exact bill amount.
+                      </p>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={Boolean(settings.printShowUPIQR)}
+                      onChange={(e) => handleUpdateSetting('printShowUPIQR', e.target.checked)}
+                      className="w-4 h-4 rounded text-rose-600 focus:ring-rose-500 cursor-pointer"
+                    />
+                  </div>
+                  <div className="flex flex-col sm:flex-row gap-2">
+                    <input
+                      type="text"
+                      value={upiId}
+                      onChange={(e) => setUpiId(e.target.value)}
+                      placeholder="Enter Business UPI ID (e.g. storename@okhdfcbank)"
+                      className="flex-1 px-3 py-2 text-xs bg-slate-50 border border-slate-300 rounded-lg font-mono"
+                    />
+                    <button
+                      type="button"
+                      onClick={handleSaveUpiId}
+                      disabled={isSaving}
+                      className="px-4 py-2 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg cursor-pointer disabled:opacity-50"
+                    >
+                      Save UPI ID
+                    </button>
+                  </div>
+                </div>
+
+                {/* 2. Multiple Firms & 3. Passcode Lock & 4. Audit Trail */}
+                <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-2xs space-y-4">
+                  <h3 className="text-sm font-bold text-slate-900 pb-3 border-b border-slate-100 flex items-center gap-2">
+                    <Lock className="w-4 h-4 text-rose-600" />
+                    <span>2. Multiple Firms, Passcode Lock &amp; Audit Trail</span>
+                  </h3>
+
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between p-3.5 bg-slate-50 rounded-xl border border-slate-200">
+                      <div>
+                        <h4 className="text-xs font-bold text-slate-900 flex items-center gap-2">
+                          <Building2 className="w-3.5 h-3.5 text-indigo-600" />
+                          <span>Enable Multiple Firms Switcher</span>
+                        </h4>
+                        <p className="text-[11px] text-slate-500 mt-0.5">
+                          Adds a Firm Switcher in the sidebar footer ({getFirmsList().length} firm{getFirmsList().length === 1 ? '' : 's'} registered). Each firm keeps isolated databases &amp; numbering.
+                        </p>
+                      </div>
+                      <input
+                        type="checkbox"
+                        checked={Boolean(settings.enableMultipleFirms)}
+                        onChange={(e) => handleUpdateSetting('enableMultipleFirms', e.target.checked)}
+                        className="w-4 h-4 rounded text-rose-600 focus:ring-rose-500 cursor-pointer"
+                      />
+                    </div>
+
+                    <div className="flex items-center justify-between p-3.5 bg-slate-50 rounded-xl border border-slate-200">
+                      <div>
+                        <h4 className="text-xs font-bold text-slate-900 flex items-center gap-2">
+                          <Activity className="w-3.5 h-3.5 text-blue-600" />
+                          <span>Enable Audit Trail Activity Log</span>
+                        </h4>
+                        <p className="text-[11px] text-slate-500 mt-0.5">
+                          Logs every create, edit, cancel, convert, delete, settings change, and backup restore with timestamps in Reports &rarr; Audit Trail.
+                        </p>
+                      </div>
+                      <input
+                        type="checkbox"
+                        checked={Boolean(settings.enableAuditTrail)}
+                        onChange={(e) => handleUpdateSetting('enableAuditTrail', e.target.checked)}
+                        className="w-4 h-4 rounded text-rose-600 focus:ring-rose-500 cursor-pointer"
+                      />
+                    </div>
+
+                    <div className="flex items-center justify-between p-3.5 bg-slate-50 rounded-xl border border-slate-200">
+                      <div>
+                        <h4 className="text-xs font-bold text-slate-900">Lock Application with PIN on Startup</h4>
+                        <p className="text-[11px] text-slate-500 mt-0.5">
+                          Requires your security PIN whenever the app opens. {hasExistingPin ? '(PIN configured)' : '(Set a PIN below first)'}
+                        </p>
+                      </div>
+                      <input
+                        type="checkbox"
+                        checked={Boolean(settings.enablePasscodeLock)}
+                        disabled={!hasExistingPin}
+                        onChange={(e) => handleUpdateSetting('enablePasscodeLock', e.target.checked)}
+                        className="w-4 h-4 rounded text-rose-600 focus:ring-rose-500 cursor-pointer disabled:opacity-40"
+                      />
+                    </div>
+
+                    <div className="flex items-center justify-between p-3.5 bg-slate-50 rounded-xl border border-slate-200">
+                      <div>
+                        <h4 className="text-xs font-bold text-slate-900">Require PIN to Edit or Delete Transactions</h4>
+                        <p className="text-[11px] text-slate-500 mt-0.5">
+                          Prompts for PIN verification before opening transaction edits, cancellations, or deletions.
+                        </p>
+                      </div>
+                      <input
+                        type="checkbox"
+                        checked={Boolean(settings.requirePinForEditDelete)}
+                        disabled={!hasExistingPin}
+                        onChange={(e) => handleUpdateSetting('requirePinForEditDelete', e.target.checked)}
+                        className="w-4 h-4 rounded text-rose-600 focus:ring-rose-500 cursor-pointer disabled:opacity-40"
+                      />
+                    </div>
+                  </div>
+
+                  {/* PIN Configuration Form */}
+                  <form onSubmit={handleSaveSecurityPin} className="p-4 bg-slate-50 rounded-xl border border-slate-200 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <h4 className="text-xs font-bold text-slate-900">
+                        {hasExistingPin ? 'Change or Remove Security PIN' : 'Set Security PIN (4–8 digits)'}
+                      </h4>
+                      {hasExistingPin && (
+                        <button
+                          type="button"
+                          onClick={handleRemovePin}
+                          className="text-[11px] font-semibold text-rose-600 hover:underline cursor-pointer"
+                        >
+                          Remove PIN Protection
+                        </button>
+                      )}
+                    </div>
+
+                    {pinError && (
+                      <div className="p-2 text-xs text-rose-700 bg-rose-50 border border-rose-200 rounded-lg">
+                        {pinError}
+                      </div>
+                    )}
+
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                      {hasExistingPin && (
+                        <div>
+                          <label className="text-[11px] text-slate-600 block mb-1">Current PIN</label>
+                          <input
+                            type="password"
+                            inputMode="numeric"
+                            maxLength={8}
+                            value={currentPinInput}
+                            onChange={(e) => setCurrentPinInput(e.target.value.replace(/\D/g, ''))}
+                            placeholder="••••"
+                            className="w-full px-3 py-1.5 text-xs font-mono bg-white border border-slate-300 rounded-lg"
+                          />
+                        </div>
+                      )}
+                      <div>
+                        <label className="text-[11px] text-slate-600 block mb-1">New PIN (4-8 digits)</label>
+                        <input
+                          type="password"
+                          inputMode="numeric"
+                          maxLength={8}
+                          value={newPinInput}
+                          onChange={(e) => setNewPinInput(e.target.value.replace(/\D/g, ''))}
+                          placeholder="••••"
+                          className="w-full px-3 py-1.5 text-xs font-mono bg-white border border-slate-300 rounded-lg"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[11px] text-slate-600 block mb-1">Confirm PIN</label>
+                        <input
+                          type="password"
+                          inputMode="numeric"
+                          maxLength={8}
+                          value={confirmPinInput}
+                          onChange={(e) => setConfirmPinInput(e.target.value.replace(/\D/g, ''))}
+                          placeholder="••••"
+                          className="w-full px-3 py-1.5 text-xs font-mono bg-white border border-slate-300 rounded-lg"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="flex justify-end">
+                      <button
+                        type="submit"
+                        className="px-4 py-1.5 text-xs font-semibold text-white bg-slate-900 hover:bg-slate-800 rounded-lg cursor-pointer"
+                      >
+                        {hasExistingPin ? 'Update PIN' : 'Save & Enable PIN'}
+                      </button>
+                    </div>
+                  </form>
+                </div>
+
+                {/* 3. Barcode & Batch/Serial Tracking */}
+                <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-2xs space-y-3">
+                  <h3 className="text-sm font-bold text-slate-900 pb-2 border-b border-slate-100 flex items-center gap-2">
+                    <ScanBarcode className="w-4 h-4 text-amber-600" />
+                    <span>3. Barcode Scanning, Batch &amp; Serial Numbers</span>
+                  </h3>
+
+                  <div className="flex items-center justify-between p-3.5 bg-slate-50 rounded-xl border border-slate-200">
+                    <div>
+                      <h4 className="text-xs font-bold text-slate-900">Enable Barcode Scan / Type Input on Sale &amp; Purchase</h4>
+                      <p className="text-[11px] text-slate-500 mt-0.5">
+                        Adds a fast barcode scanner input bar above invoice item grids to look up items by barcode or item code.
+                      </p>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={Boolean(settings.enableBarcode)}
+                      onChange={(e) => handleUpdateSetting('enableBarcode', e.target.checked)}
+                      className="w-4 h-4 rounded text-rose-600 focus:ring-rose-500 cursor-pointer"
+                    />
+                  </div>
+
+                  <div className="flex items-center justify-between p-3.5 bg-slate-50 rounded-xl border border-slate-200">
+                    <div>
+                      <h4 className="text-xs font-bold text-slate-900">Enable Batch No. &amp; Serial No. Line Tracking</h4>
+                      <p className="text-[11px] text-slate-500 mt-0.5">
+                        Shows Batch Number and Serial Number fields on items and invoice/bill rows, printed on A4 invoices.
+                      </p>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={Boolean(settings.enableBatchSerial)}
+                      onChange={(e) => handleUpdateSetting('enableBatchSerial', e.target.checked)}
+                      className="w-4 h-4 rounded text-rose-600 focus:ring-rose-500 cursor-pointer"
+                    />
+                  </div>
+                </div>
+
+                {/* 4. Dark Mode & Keyboard Shortcuts */}
+                <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-2xs space-y-3">
+                  <h3 className="text-sm font-bold text-slate-900 pb-2 border-b border-slate-100 flex items-center gap-2">
+                    <Moon className="w-4 h-4 text-violet-600" />
+                    <span>4. Appearance (Dark Mode) &amp; Keyboard Shortcuts</span>
+                  </h3>
+
+                  <div className="flex items-center justify-between p-3.5 bg-slate-50 rounded-xl border border-slate-200">
+                    <div>
+                      <h4 className="text-xs font-bold text-slate-900">Dark Mode Theme</h4>
+                      <p className="text-[11px] text-slate-500 mt-0.5">
+                        Switches the workspace to a low-glare dark interface while keeping printable invoices crisp white.
+                      </p>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={Boolean(settings.darkMode)}
+                      onChange={(e) => handleUpdateSetting('darkMode', e.target.checked)}
+                      className="w-4 h-4 rounded text-rose-600 focus:ring-rose-500 cursor-pointer"
+                    />
+                  </div>
+
+                  <div className="flex items-center justify-between p-3.5 bg-slate-50 rounded-xl border border-slate-200">
+                    <div>
+                      <h4 className="text-xs font-bold text-slate-900 flex items-center gap-2">
+                        <Keyboard className="w-3.5 h-3.5 text-slate-600" />
+                        <span>Enable Extended Keyboard Shortcuts (Ctrl+S, Ctrl+N, Ctrl+P, Esc)</span>
+                      </h4>
+                      <p className="text-[11px] text-slate-500 mt-0.5">
+                        Ctrl+N opens new sale, Ctrl+S saves open invoice/bill, Ctrl+P prints open preview, Esc closes modals.
+                      </p>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={settings.enableExtendedShortcuts !== false}
+                      onChange={(e) => handleUpdateSetting('enableExtendedShortcuts', e.target.checked)}
+                      className="w-4 h-4 rounded text-rose-600 focus:ring-rose-500 cursor-pointer"
+                    />
+                  </div>
+                </div>
+
+                {/* 5. Weight Units & Job Work Challans */}
+                <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-2xs space-y-3">
+                  <h3 className="text-sm font-bold text-slate-900 pb-2 border-b border-slate-100 flex items-center gap-2">
+                    <Scale className="w-4 h-4 text-teal-600" />
+                    <span>5. Weight-Based Unit Conversion &amp; Job Work Challans</span>
+                  </h3>
+
+                  <div className="flex items-center justify-between p-3.5 bg-slate-50 rounded-xl border border-slate-200">
+                    <div>
+                      <h4 className="text-xs font-bold text-slate-900">Enable Weight Unit Conversion (GM / KG / QUINTAL / TONNE)</h4>
+                      <p className="text-[11px] text-slate-500 mt-0.5">
+                        Sell or buy a KG-tracked item in Quintals or Tonnes; line prices and stock deductions convert automatically.
+                      </p>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={Boolean(settings.enableWeightUnits)}
+                      onChange={(e) => handleUpdateSetting('enableWeightUnits', e.target.checked)}
+                      className="w-4 h-4 rounded text-rose-600 focus:ring-rose-500 cursor-pointer"
+                    />
+                  </div>
+
+                  <div className="flex items-center justify-between p-3.5 bg-slate-50 rounded-xl border border-slate-200">
+                    <div>
+                      <h4 className="text-xs font-bold text-slate-900 flex items-center gap-2">
+                        <Wrench className="w-3.5 h-3.5 text-indigo-600" />
+                        <span>Enable Job Work Out &amp; Job Work In Challans</span>
+                      </h4>
+                      <p className="text-[11px] text-slate-500 mt-0.5">
+                        Adds Job Work (Out / In) under Sale to send raw materials out for processing and receive finished goods back.
+                      </p>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={Boolean(settings.enableJobWork)}
+                      onChange={(e) => handleUpdateSetting('enableJobWork', e.target.checked)}
+                      className="w-4 h-4 rounded text-rose-600 focus:ring-rose-500 cursor-pointer"
+                    />
                   </div>
                 </div>
               </div>

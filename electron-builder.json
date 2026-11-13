@@ -1,12 +1,14 @@
 {
   "appId": "com.amman.billing",
   "productName": "Amman Billing & Accounting",
+  "npmRebuild": false,
   "directories": {
     "output": "release"
   },
   "files": [
     "dist/**/*",
     "electron/**/*",
+    "public/icon-512.png",
     "package.json"
   ],
   "extraMetadata": {
@@ -16,14 +18,14 @@
     "target": [
       {
         "target": "nsis",
-        "arch": ["x64", "ia32"]
+        "arch": ["x64"]
       },
       {
         "target": "portable",
         "arch": ["x64"]
       }
     ],
-    "icon": "public/icon-512.svg",
+    "icon": "public/icon-512.png",
     "requestedExecutionLevel": "asInvoker"
   },
   "nsis": {
@@ -33,6 +35,10 @@
     "createStartMenuShortcut": true,
     "shortcutName": "Amman Billing & Accounting",
     "uninstallDisplayName": "Amman Billing & Accounting",
-    "deleteAppDataOnUninstall": false
+    "deleteAppDataOnUninstall": false,
+    "artifactName": "Amman-Billing-Setup-${version}.${ext}"
+  },
+  "portable": {
+    "artifactName": "Amman-Billing-${version}-portable.${ext}"
   }
 }

@@ -14,6 +14,7 @@ import { getTransactions, getParties, deleteTransaction } from '../../db/indexed
 import { formatINR, formatDate } from '../../utils/formatters';
 import { ConfirmDeleteModal } from '../common/ConfirmDeleteModal';
 import { useToast } from '../common/Toast';
+import { useSecurity } from '../../contexts/SecurityContext';
 
 interface ReturnsViewProps {
   mode: 'sale_return' | 'purchase_return';
@@ -45,6 +46,7 @@ export const ReturnsView: React.FC<ReturnsViewProps> = ({
   const [txToDelete, setTxToDelete] = useState<Transaction | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
   const { showToast } = useToast();
+  const { requirePin } = useSecurity();
 
   const isSaleReturn = mode === 'sale_return';
   const heading = isSaleReturn ? 'Sale Returns (Credit Notes)' : 'Purchase Returns (Debit Notes)';
@@ -305,7 +307,11 @@ export const ReturnsView: React.FC<ReturnsViewProps> = ({
                         </button>
                         <button
                           type="button"
-                          onClick={() => onEditReturn(r)}
+                          onClick={async () => {
+                            if (await requirePin(`Enter PIN to edit ${r.invoiceNo}`)) {
+                              onEditReturn(r);
+                            }
+                          }}
                           title="Edit Note"
                           className="p-1 text-blue-600 hover:text-blue-800 hover:bg-blue-50 rounded-md transition-colors cursor-pointer"
                         >
@@ -313,7 +319,11 @@ export const ReturnsView: React.FC<ReturnsViewProps> = ({
                         </button>
                         <button
                           type="button"
-                          onClick={() => setTxToDelete(r)}
+                          onClick={async () => {
+                            if (await requirePin(`Enter PIN to delete ${r.invoiceNo}`)) {
+                              setTxToDelete(r);
+                            }
+                          }}
                           title="Delete Note"
                           className="p-1 text-rose-500 hover:text-rose-700 hover:bg-rose-50 rounded-md transition-colors cursor-pointer"
                         >

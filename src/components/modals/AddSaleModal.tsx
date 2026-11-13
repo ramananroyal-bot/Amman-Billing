@@ -1,9 +1,15 @@
 import React, { useState, useEffect } from 'react';
-import { X, Plus, Trash2, UserPlus, PackagePlus, AlertCircle } from 'lucide-react';
-import { BusinessProfile, Item, Party, Transaction, TransactionItem } from '../../types';
+import { X, Plus, Trash2, UserPlus, PackagePlus, AlertCircle, ScanBarcode } from 'lucide-react';
+import { AppSettings, BusinessProfile, Item, Party, Transaction, TransactionItem } from '../../types';
 import { INDIAN_STATES, GST_RATES, STANDARD_UNITS } from '../../types/indianStates';
 import { getItems, getParties, saveTransaction, getAppSettings } from '../../db/indexedDB';
 import { calculateTax, formatINR, getTodayISO } from '../../utils/formatters';
+import {
+  isWeightUnit,
+  getCompatibleUnits,
+  convertWeightQty,
+  calculateConvertedUnitPrice,
+} from '../../utils/unitConversion';
 import { ConfirmDiscardModal } from '../common/ConfirmDiscardModal';
 import { QuickAddPartyModal } from './QuickAddPartyModal';
 import { QuickAddItemModal } from './QuickAddItemModal';
@@ -15,7 +21,7 @@ interface AddSaleModalProps {
   onSaved: (tx: Transaction) => void;
   initialPartyId?: string;
   transactionToEdit?: Transaction | null;
-  initialType?: 'sale_invoice' | 'delivery_challan';
+  initialType?: 'sale_invoice' | 'delivery_challan' | 'estimate' | 'job_work_out' | 'job_work_in';
 }
 
 export const AddSaleModal: React.FC<AddSaleModalProps> = ({
@@ -29,8 +35,18 @@ export const AddSaleModal: React.FC<AddSaleModalProps> = ({
 }) => {
   const [parties, setParties] = useState<Party[]>([]);
   const [itemsList, setItemsList] = useState<Item[]>([]);
+  const [appSettings, setAppSettings] = useState<AppSettings | null>(null);
 
-  const isChallan = transactionToEdit ? transactionToEdit.type === 'delivery_challan' : initialType === 'delivery_challan';
+  const activeType = transactionToEdit ? transactionToEdit.type : initialType;
+  const isChallan = activeType === 'delivery_challan';
+  const isEstimate = activeType === 'estimate';
+  const isJobWorkOut = activeType === 'job_work_out';
+  const isJobWorkIn = activeType === 'job_work_in';
+  const isJobWork = isJobWorkOut || isJobWorkIn;
+
+  // Barcode quick scan bar
+  const [barcodeInput, setBarcodeInput] = useState('');
+  const [barcodeFeedback, setBarcodeFeedback] = useState<{ text: string; ok: boolean } | null>(null);
 
   // Invoice headers
   const [paymentType, setPaymentType] = useState<'credit' | 'cash'>('credit');
@@ -45,11 +61,19 @@ export const AddSaleModal: React.FC<AddSaleModalProps> = ({
   const [stateOfSupply, setStateOfSupply] = useState(businessProfile.state);
 
   const [invoiceNo, setInvoiceNo] = useState(
-    isChallan
-      ? `CH-${String(businessProfile.nextChallanNumber || 1).padStart(4, '0')}`
+    isJobWorkOut
+      ? `${businessProfile.jobWorkOutPrefix || 'JWO-'}${String(businessProfile.nextJobWorkOutNumber || 1).padStart(4, '0')}`
+      : isJobWorkIn
+      ? `${businessProfile.jobWorkInPrefix || 'JWI-'}${String(businessProfile.nextJobWorkInNumber || 1).padStart(4, '0')}`
+      : isEstimate
+      ? `${businessProfile.estimatePrefix || 'EST-'}${String(businessProfile.nextEstimateNumber || 1).padStart(4, '0')}`
+      : isChallan
+      ? `${businessProfile.challanPrefix || 'CH-'}${String(businessProfile.nextChallanNumber || 1).padStart(4, '0')}`
       : `${businessProfile.invoicePrefix || 'INV-'}${String(businessProfile.nextInvoiceNumber || 1).padStart(4, '0')}`
   );
   const [invoiceDate, setInvoiceDate] = useState(getTodayISO());
+  const [dueDate, setDueDate] = useState('');
+  const [processType, setProcessType] = useState('');
   const [godown, setGodown] = useState('Main Godown');
   const [copiesCount, setCopiesCount] = useState(2);
   const [terms, setTerms] = useState(businessProfile.terms || '');
@@ -94,10 +118,16 @@ export const AddSaleModal: React.FC<AddSaleModalProps> = ({
   const [errors, setErrors] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
 
+  // Low stock confirmation state before saving a sale invoice
+  const [lowStockPromptItems, setLowStockPromptItems] = useState<
+    { name: string; currentStock: number; newStock: number; minAlert: number; unit: string }[]
+  >([]);
+
   // Load parties and items or populate edit
   useEffect(() => {
     if (isOpen) {
       loadDependencies();
+      setLowStockPromptItems([]);
       if (transactionToEdit) {
         setPaymentType(transactionToEdit.paymentType === 'cash' ? 'cash' : 'credit');
         setSelectedPartyId(transactionToEdit.partyId);
@@ -111,6 +141,7 @@ export const AddSaleModal: React.FC<AddSaleModalProps> = ({
         setStateOfSupply(transactionToEdit.stateOfSupply);
         setInvoiceNo(transactionToEdit.invoiceNo);
         setInvoiceDate(transactionToEdit.date);
+        setDueDate(transactionToEdit.dueDate || '');
         setRows(transactionToEdit.items && transactionToEdit.items.length > 0 ? transactionToEdit.items : [
           {
             id: 'row_1',
@@ -131,18 +162,38 @@ export const AddSaleModal: React.FC<AddSaleModalProps> = ({
         setNotes(transactionToEdit.description || '');
         setVehicleNo(transactionToEdit.vehicleNo || '');
         setDeliveryDate(transactionToEdit.deliveryDate || '');
+        setProcessType(transactionToEdit.processType || '');
         setGodown(transactionToEdit.godown || 'Main Godown');
         setCopiesCount(transactionToEdit.copiesCount || 2);
         setTerms(transactionToEdit.terms || businessProfile.terms || '');
         setDocumentUrl(transactionToEdit.documentUrl || '');
+        getAppSettings().then(setAppSettings);
       } else {
         setInvoiceNo(
-          `${businessProfile.invoicePrefix || 'INV-'}${String(businessProfile.nextInvoiceNumber || 1).padStart(4, '0')}`
+          isJobWorkOut
+            ? `${businessProfile.jobWorkOutPrefix || 'JWO-'}${String(businessProfile.nextJobWorkOutNumber || 1).padStart(4, '0')}`
+            : isJobWorkIn
+            ? `${businessProfile.jobWorkInPrefix || 'JWI-'}${String(businessProfile.nextJobWorkInNumber || 1).padStart(4, '0')}`
+            : isEstimate
+            ? `${businessProfile.estimatePrefix || 'EST-'}${String(businessProfile.nextEstimateNumber || 1).padStart(4, '0')}`
+            : isChallan
+            ? `${businessProfile.challanPrefix || 'CH-'}${String(businessProfile.nextChallanNumber || 1).padStart(4, '0')}`
+            : `${businessProfile.invoicePrefix || 'INV-'}${String(businessProfile.nextInvoiceNumber || 1).padStart(4, '0')}`
         );
+        setProcessType('');
+        // Set default due date / validity date from AppSettings
+        getAppSettings().then((s) => {
+          setAppSettings(s);
+          const d = new Date();
+          d.setDate(d.getDate() + (s.defaultDueDays || 30));
+          setDueDate(d.toISOString().split('T')[0]);
+        });
       }
+      setBarcodeInput('');
+      setBarcodeFeedback(null);
       setIsDirty(false);
     }
-  }, [isOpen, businessProfile, transactionToEdit]);
+  }, [isOpen, businessProfile, transactionToEdit, initialType]);
 
   const loadDependencies = async () => {
     const p = await getParties();
@@ -213,6 +264,9 @@ export const AddSaleModal: React.FC<AddSaleModalProps> = ({
         unit: item.unit,
         priceUnit: item.salePrice,
         taxRate: item.taxRate,
+        batchNumber: item.batchNumber || updated[index].batchNumber || '',
+        serialNumber: item.serialNumber || updated[index].serialNumber || '',
+        expiryDate: item.expiryDate || updated[index].expiryDate || '',
       };
     } else {
       updated[index] = {
@@ -227,13 +281,96 @@ export const AddSaleModal: React.FC<AddSaleModalProps> = ({
     recalculateRow(updated, index);
   };
 
+  // Barcode / Item Code quick lookup handler
+  const handleBarcodeLookup = () => {
+    const code = barcodeInput.trim().toLowerCase();
+    if (!code) return;
+    const match = itemsList.find(
+      (i) =>
+        (i.barcode && i.barcode.toLowerCase() === code) ||
+        (i.itemCode && i.itemCode.toLowerCase() === code)
+    );
+    if (!match) {
+      setBarcodeFeedback({ text: `No item found for barcode "${barcodeInput.trim()}"`, ok: false });
+      return;
+    }
+
+    setIsDirty(true);
+    const updated = [...rows];
+    const existingIdx = updated.findIndex(
+      (r) => String(r.itemId) === String(match.id) && r.unit === match.unit
+    );
+
+    if (existingIdx >= 0) {
+      updated[existingIdx] = {
+        ...updated[existingIdx],
+        qty: (Number(updated[existingIdx].qty) || 0) + 1,
+      };
+      recalculateRow(updated, existingIdx);
+      setBarcodeFeedback({ text: `+1 Qty added for ${match.name}`, ok: true });
+    } else {
+      const emptyIdx = updated.findIndex((r) => !r.itemId && !r.name.trim());
+      if (emptyIdx >= 0) {
+        updated[emptyIdx] = {
+          ...updated[emptyIdx],
+          itemId: match.id,
+          name: match.name,
+          hsn: match.hsn,
+          unit: match.unit,
+          priceUnit: match.salePrice,
+          taxRate: match.taxRate,
+          batchNumber: match.batchNumber || '',
+          serialNumber: match.serialNumber || '',
+          expiryDate: match.expiryDate || '',
+        };
+        recalculateRow(updated, emptyIdx);
+      } else {
+        const newRow: TransactionItem = {
+          id: `row_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
+          itemId: match.id,
+          name: match.name,
+          hsn: match.hsn,
+          qty: 1,
+          freeQty: 0,
+          unit: match.unit,
+          priceUnit: match.salePrice,
+          taxRate: match.taxRate,
+          taxAmount: 0,
+          discountAmount: 0,
+          totalAmount: 0,
+          batchNumber: match.batchNumber || '',
+          serialNumber: match.serialNumber || '',
+          expiryDate: match.expiryDate || '',
+        };
+        updated.push(newRow);
+        recalculateRow(updated, updated.length - 1);
+      }
+      setBarcodeFeedback({ text: `Added ${match.name}`, ok: true });
+    }
+    setBarcodeInput('');
+  };
+
   const handleRowChange = (index: number, field: keyof TransactionItem, value: unknown) => {
     setIsDirty(true);
     const updated = [...rows];
+    const prevRow = updated[index];
     updated[index] = {
-      ...updated[index],
+      ...prevRow,
       [field]: value,
     };
+
+    // If changing a weight unit while unit conversion is enabled, auto-scale unit price
+    if (field === 'unit' && appSettings?.enableWeightUnits && prevRow.itemId) {
+      const baseItem = itemsList.find((i) => String(i.id) === String(prevRow.itemId));
+      if (baseItem && isWeightUnit(baseItem.unit) && isWeightUnit(String(value))) {
+        updated[index].priceUnit = calculateConvertedUnitPrice(
+          baseItem.salePrice,
+          baseItem.unit,
+          String(value)
+        );
+      }
+    }
+
     recalculateRow(updated, index);
   };
 
@@ -322,10 +459,10 @@ export const AddSaleModal: React.FC<AddSaleModalProps> = ({
     }
   };
 
-  // Save handler
-  const handleSave = async () => {
+  // Save handler with optional low-stock warning bypass
+  const handleSave = async (confirmLowStockProceed = false) => {
     if (!invoiceNo.trim()) {
-      setErrors('Invoice number is required');
+      setErrors(isEstimate ? 'Estimate number is required' : 'Invoice number is required');
       return;
     }
     const validItems = rows.filter((r) => r.name.trim() || r.itemId);
@@ -350,53 +487,102 @@ export const AddSaleModal: React.FC<AddSaleModalProps> = ({
     setErrors(null);
 
     try {
-      // AppSettings validations (negative stock & credit limit)
+      // AppSettings validations (negative stock, low stock alert & credit limit apply only to sale invoices)
       const settings = await getAppSettings();
 
-      // Check negative stock
-      for (const item of validItems) {
-        if (item.itemId) {
-          const dbItem = itemsList.find((i) => String(i.id) === String(item.itemId));
-          if (dbItem) {
-            const reqQty = (Number(item.qty) || 0) + (Number(item.freeQty) || 0);
-            const currentStock = Number(dbItem.currentStock) || 0;
-            if (currentStock < reqQty) {
-              const shortBy = reqQty - currentStock;
-              if (settings.blockNegativeStock) {
+      if (!isEstimate && !isChallan && !isJobWorkIn) {
+        const lowWarnings: {
+          name: string;
+          currentStock: number;
+          newStock: number;
+          minAlert: number;
+          unit: string;
+        }[] = [];
+
+        for (const item of validItems) {
+          if (item.itemId) {
+            const dbItem = itemsList.find((i) => String(i.id) === String(item.itemId));
+            if (dbItem && dbItem.type === 'product') {
+              const rawReqQty = (Number(item.qty) || 0) + (Number(item.freeQty) || 0);
+              const reqQty = convertWeightQty(rawReqQty, item.unit, dbItem.unit);
+              const oldRawQty =
+                transactionToEdit?.items
+                  .filter((oi) => String(oi.itemId) === String(item.itemId))
+                  .reduce((sum, oi) => sum + convertWeightQty((Number(oi.qty) || 0) + (Number(oi.freeQty) || 0), oi.unit, dbItem.unit), 0) || 0;
+              const effectiveStock = (Number(dbItem.currentStock) || 0) + oldRawQty;
+              const projectedStock = effectiveStock - reqQty;
+
+              if (effectiveStock < reqQty && settings.blockNegativeStock) {
+                const shortBy = reqQty - effectiveStock;
                 setErrors(
-                  `Blocked: Insufficient stock for "${dbItem.name}". Available: ${currentStock} ${dbItem.unit || 'units'}, Requested: ${reqQty} (Short by ${shortBy}). Stock restriction is enabled in Application Settings.`
+                  `Blocked: Insufficient stock for "${dbItem.name}". Available: ${effectiveStock} ${
+                    dbItem.unit || 'units'
+                  }, Requested: ${reqQty} (Short by ${shortBy}). Stock restriction is enabled in Application Settings.`
                 );
                 setIsSaving(false);
                 return;
               }
+
+              if (dbItem.minStockAlert > 0 && projectedStock <= dbItem.minStockAlert) {
+                lowWarnings.push({
+                  name: dbItem.name,
+                  currentStock: effectiveStock,
+                  newStock: projectedStock,
+                  minAlert: dbItem.minStockAlert,
+                  unit: dbItem.unit || 'PCS',
+                });
+              }
             }
           }
         }
-      }
 
-      // Check credit limit for customer
-      if (paymentType === 'credit' && selectedPartyId && settings.enableCreditLimitAlerts) {
-        const party = parties.find((p) => String(p.id) === String(selectedPartyId));
-        if (party && party.creditLimit && party.creditLimit > 0) {
-          const currentBalance = Number(party.currentBalance ?? party.openingBalance) || 0;
-          const projectedBalance = currentBalance + balanceDue;
-          if (projectedBalance > party.creditLimit) {
-            const exceededBy = projectedBalance - party.creditLimit;
-            setErrors(
-              `Credit Limit Alert for ${party.name}: Credit limit is ${formatINR(party.creditLimit)}, but total outstanding will become ${formatINR(projectedBalance)} (Exceeded by ${formatINR(exceededBy)}).`
-            );
-            setIsSaving(false);
-            return;
+        // Prompt user once if any product drops to or below minimum stock alert level
+        if (!isJobWorkOut && lowWarnings.length > 0 && !confirmLowStockProceed) {
+          setLowStockPromptItems(lowWarnings);
+          setIsSaving(false);
+          return;
+        }
+
+        // Check credit limit for customer (only Sale Invoices affect credit limit)
+        if (!isJobWorkOut && paymentType === 'credit' && selectedPartyId && settings.enableCreditLimitAlerts) {
+          const party = parties.find((p) => String(p.id) === String(selectedPartyId));
+          if (party && party.creditLimit && party.creditLimit > 0) {
+            const currentBalance = Number(party.currentBalance ?? party.openingBalance) || 0;
+            const projectedBalance = currentBalance + balanceDue;
+            if (projectedBalance > party.creditLimit) {
+              const exceededBy = projectedBalance - party.creditLimit;
+              setErrors(
+                `Credit Limit Alert for ${party.name}: Credit limit is ${formatINR(
+                  party.creditLimit
+                )}, but total outstanding will become ${formatINR(projectedBalance)} (Exceeded by ${formatINR(
+                  exceededBy
+                )}).`
+              );
+              setIsSaving(false);
+              return;
+            }
           }
         }
       }
 
       const tx = await saveTransaction({
         id: transactionToEdit ? transactionToEdit.id : undefined,
-        type: isChallan ? 'delivery_challan' : 'sale_invoice',
-        challanStatus: isChallan ? (transactionToEdit?.challanStatus || 'open') : undefined,
+        type: isJobWorkOut
+          ? 'job_work_out'
+          : isJobWorkIn
+          ? 'job_work_in'
+          : isEstimate
+          ? 'estimate'
+          : isChallan
+          ? 'delivery_challan'
+          : 'sale_invoice',
+        challanStatus: isChallan ? transactionToEdit?.challanStatus || 'open' : undefined,
+        estimateStatus: isEstimate ? transactionToEdit?.estimateStatus || 'open' : undefined,
+        jobWorkStatus: isJobWorkOut ? transactionToEdit?.jobWorkStatus || 'sent' : undefined,
+        processType: isJobWork ? processType.trim() : undefined,
         invoiceNo: invoiceNo.trim(),
         date: invoiceDate,
+        dueDate: dueDate || '',
         partyId: selectedPartyId,
         partyName: partyName.trim(),
         partyGstin: partyGstin.trim(),
@@ -406,7 +592,7 @@ export const AddSaleModal: React.FC<AddSaleModalProps> = ({
         billingAddress,
         shippingAddress,
         stateOfSupply,
-        paymentType,
+        paymentType: isEstimate || isJobWork ? 'credit' : paymentType,
         items: validItems,
         subtotal: Math.round(subtotal * 100) / 100,
         cgst,
@@ -415,8 +601,8 @@ export const AddSaleModal: React.FC<AddSaleModalProps> = ({
         totalTax: Math.round(totalTax * 100) / 100,
         roundOff,
         totalAmount,
-        receivedAmount: received,
-        balanceDue,
+        receivedAmount: isEstimate || isJobWork ? 0 : received,
+        balanceDue: isEstimate || isJobWork ? 0 : balanceDue,
         description: notes,
         terms,
         vehicleNo,
@@ -427,21 +613,28 @@ export const AddSaleModal: React.FC<AddSaleModalProps> = ({
         status: 'active',
       });
 
+      setLowStockPromptItems([]);
       setIsDirty(false);
       onSaved(tx);
       onClose();
     } catch {
-      setErrors('Failed to save sale invoice.');
+      setErrors(
+        isJobWork
+          ? 'Failed to save Job Work Challan.'
+          : isEstimate
+          ? 'Failed to save estimate.'
+          : 'Failed to save sale invoice.'
+      );
     } finally {
       setIsSaving(false);
     }
   };
 
-  // In-modal Keyboard shortcuts (Ctrl+Enter to Save, Alt+A to Add Row, Esc to Close)
+  // In-modal Keyboard shortcuts (Ctrl+Enter or Ctrl+S to Save, Alt+A to Add Row, Esc to Close)
   useEffect(() => {
     if (!isOpen) return;
     const handleModalKeyDown = (e: KeyboardEvent) => {
-      if (e.ctrlKey && e.key === 'Enter') {
+      if (e.ctrlKey && (e.key === 'Enter' || e.key === 's' || e.key === 'S')) {
         e.preventDefault();
         handleSave();
       } else if (e.altKey && (e.key === 'a' || e.key === 'A')) {
@@ -454,7 +647,7 @@ export const AddSaleModal: React.FC<AddSaleModalProps> = ({
     };
     window.addEventListener('keydown', handleModalKeyDown);
     return () => window.removeEventListener('keydown', handleModalKeyDown);
-  }, [isOpen, invoiceNo, rows, paymentType, selectedPartyId, received, balanceDue, isDirty]);
+  }, [isOpen, invoiceNo, rows, paymentType, selectedPartyId, received, balanceDue, processType, isDirty]);
 
   // Quick WhatsApp Share
   const handleShareWhatsApp = () => {
@@ -479,38 +672,68 @@ export const AddSaleModal: React.FC<AddSaleModalProps> = ({
             {/* Top row with tab indicator and close */}
             <div className="flex items-center justify-between px-6 py-3 border-b border-slate-800">
               <div className="flex items-center gap-3">
-                <span className="w-2.5 h-2.5 rounded-full bg-rose-500" />
+                <span className={`w-2.5 h-2.5 rounded-full ${isEstimate ? 'bg-amber-400' : isJobWork ? 'bg-indigo-400' : 'bg-rose-500'}`} />
                 <h2 className="text-sm font-bold tracking-tight">
-                  {transactionToEdit ? `Edit Sale Invoice (${transactionToEdit.invoiceNo})` : 'Create Sale Invoice'}
+                  {transactionToEdit
+                    ? `Edit ${
+                        isJobWorkOut
+                          ? 'Job Work Out Challan'
+                          : isJobWorkIn
+                          ? 'Job Work In Challan'
+                          : isEstimate
+                          ? 'Estimate / Quotation'
+                          : isChallan
+                          ? 'Delivery Challan'
+                          : 'Sale Invoice'
+                      } (${transactionToEdit.invoiceNo})`
+                    : isJobWorkOut
+                    ? 'Create Job Work Out Challan'
+                    : isJobWorkIn
+                    ? 'Create Job Work In Challan'
+                    : isEstimate
+                    ? 'Create Estimate / Quotation'
+                    : isChallan
+                    ? 'Create Delivery Challan'
+                    : 'Create Sale Invoice'}
                 </h2>
 
-                {/* Credit / Cash Toggle */}
-                <div className="ml-4 flex items-center bg-slate-800 p-0.5 rounded-md border border-slate-700 text-xs">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setIsDirty(true);
-                      setPaymentType('credit');
-                    }}
-                    className={`px-3 py-1 rounded font-medium transition-colors cursor-pointer ${
-                      paymentType === 'credit' ? 'bg-rose-600 text-white shadow-xs' : 'text-slate-400 hover:text-white'
-                    }`}
-                  >
-                    Credit
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setIsDirty(true);
-                      setPaymentType('cash');
-                    }}
-                    className={`px-3 py-1 rounded font-medium transition-colors cursor-pointer ${
-                      paymentType === 'cash' ? 'bg-rose-600 text-white shadow-xs' : 'text-slate-400 hover:text-white'
-                    }`}
-                  >
-                    Cash
-                  </button>
-                </div>
+                {isEstimate || isJobWork ? (
+                  <span className="ml-2 px-2.5 py-0.5 rounded-md bg-amber-500/20 text-amber-300 border border-amber-500/30 text-[11px] font-medium">
+                    {isJobWorkOut
+                      ? 'Sends goods out for processing · Stock deducted'
+                      : isJobWorkIn
+                      ? 'Receives processed goods back · Stock added'
+                      : 'No stock or party balance impact'}
+                  </span>
+                ) : (
+                  /* Credit / Cash Toggle */
+                  <div className="ml-4 flex items-center bg-slate-800 p-0.5 rounded-md border border-slate-700 text-xs">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsDirty(true);
+                        setPaymentType('credit');
+                      }}
+                      className={`px-3 py-1 rounded font-medium transition-colors cursor-pointer ${
+                        paymentType === 'credit' ? 'bg-rose-600 text-white shadow-xs' : 'text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      Credit
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsDirty(true);
+                        setPaymentType('cash');
+                      }}
+                      className={`px-3 py-1 rounded font-medium transition-colors cursor-pointer ${
+                        paymentType === 'cash' ? 'bg-rose-600 text-white shadow-xs' : 'text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      Cash
+                    </button>
+                  </div>
+                )}
               </div>
 
               <button
@@ -575,9 +798,11 @@ export const AddSaleModal: React.FC<AddSaleModalProps> = ({
                 )}
               </div>
 
-              {/* Invoice Number */}
+              {/* Invoice / Estimate Number */}
               <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">Invoice Number *</label>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  {isEstimate ? 'Estimate Number *' : isChallan ? 'Challan Number *' : 'Invoice Number *'}
+                </label>
                 <input
                   type="text"
                   value={invoiceNo}
@@ -589,18 +814,34 @@ export const AddSaleModal: React.FC<AddSaleModalProps> = ({
                 />
               </div>
 
-              {/* Invoice Date */}
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">Invoice Date *</label>
-                <input
-                  type="date"
-                  value={invoiceDate}
-                  onChange={(e) => {
-                    setIsDirty(true);
-                    setInvoiceDate(e.target.value);
-                  }}
-                  className="w-full px-3 py-2 text-xs bg-white border border-slate-300 rounded-lg focus:outline-hidden focus:ring-1 focus:ring-slate-900 font-mono"
-                />
+              {/* Invoice Date & Due Date / Valid Until */}
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">Date *</label>
+                  <input
+                    type="date"
+                    value={invoiceDate}
+                    onChange={(e) => {
+                      setIsDirty(true);
+                      setInvoiceDate(e.target.value);
+                    }}
+                    className="w-full px-2.5 py-2 text-xs bg-white border border-slate-300 rounded-lg focus:outline-hidden focus:ring-1 focus:ring-slate-900 font-mono"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    {isEstimate ? 'Valid Until' : 'Due Date'}
+                  </label>
+                  <input
+                    type="date"
+                    value={dueDate}
+                    onChange={(e) => {
+                      setIsDirty(true);
+                      setDueDate(e.target.value);
+                    }}
+                    className="w-full px-2.5 py-2 text-xs bg-white border border-slate-300 rounded-lg focus:outline-hidden focus:ring-1 focus:ring-slate-900 font-mono"
+                  />
+                </div>
               </div>
 
               {/* State of Supply */}
@@ -690,12 +931,69 @@ export const AddSaleModal: React.FC<AddSaleModalProps> = ({
                   className="w-full px-3 py-1.5 text-xs bg-white border border-slate-300 rounded-lg"
                 />
               </div>
+              {/* Job Work Process Type field when Job Work Out/In */}
+              {isJobWork && (
+                <div className="md:col-span-4">
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    Nature of Processing / Job Work Type
+                  </label>
+                  <input
+                    type="text"
+                    value={processType}
+                    onChange={(e) => {
+                      setIsDirty(true);
+                      setProcessType(e.target.value);
+                    }}
+                    placeholder="e.g. Dyeing, CNC Machining, Stitching, Polishing, Milling..."
+                    className="w-full px-3 py-1.5 text-xs bg-white border border-slate-300 rounded-lg"
+                  />
+                </div>
+              )}
             </div>
 
             {/* Line Items Grid */}
             <div className="border border-slate-200 rounded-xl overflow-hidden shadow-2xs">
-              <div className="bg-slate-100 px-4 py-2.5 flex items-center justify-between border-b border-slate-200">
+              <div className="bg-slate-100 px-4 py-2.5 flex flex-wrap items-center justify-between gap-2 border-b border-slate-200">
                 <span className="text-xs font-bold text-slate-800 uppercase tracking-wider">Item Details</span>
+
+                {/* Barcode scanner quick add bar (visible when enabled in Settings) */}
+                {appSettings?.enableBarcode && (
+                  <div className="flex items-center gap-1.5 flex-1 max-w-sm">
+                    <div className="relative flex-1">
+                      <ScanBarcode className="w-3.5 h-3.5 text-amber-600 absolute left-2.5 top-1/2 -translate-y-1/2" />
+                      <input
+                        type="text"
+                        value={barcodeInput}
+                        onChange={(e) => setBarcodeInput(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault();
+                            handleBarcodeLookup();
+                          }
+                        }}
+                        placeholder="Scan or type barcode / SKU + Enter..."
+                        className="w-full pl-8 pr-2.5 py-1 text-xs bg-white border border-amber-300 rounded-md font-mono focus:outline-hidden focus:ring-1 focus:ring-amber-500"
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleBarcodeLookup}
+                      className="px-2.5 py-1 text-[11px] font-semibold bg-amber-600 hover:bg-amber-700 text-white rounded-md cursor-pointer"
+                    >
+                      Add
+                    </button>
+                    {barcodeFeedback && (
+                      <span
+                        className={`text-[10px] font-semibold whitespace-nowrap ${
+                          barcodeFeedback.ok ? 'text-emerald-700' : 'text-rose-600'
+                        }`}
+                      >
+                        {barcodeFeedback.text}
+                      </span>
+                    )}
+                  </div>
+                )}
+
                 <button
                   type="button"
                   onClick={() => setShowQuickItem(true)}
@@ -755,6 +1053,24 @@ export const AddSaleModal: React.FC<AddSaleModalProps> = ({
                               className="mt-1 w-full px-2 py-1 text-[11px] bg-slate-50 border border-slate-200 rounded-md"
                             />
                           )}
+                          {(appSettings?.enableBatchSerial || appSettings?.enableBatchExpiry) && (
+                            <div className="mt-1 grid grid-cols-2 gap-1">
+                              <input
+                                type="text"
+                                value={row.batchNumber || ''}
+                                onChange={(e) => handleRowChange(idx, 'batchNumber', e.target.value)}
+                                placeholder="Batch No."
+                                className="px-1.5 py-0.5 text-[10px] bg-slate-50 border border-slate-200 rounded font-mono"
+                              />
+                              <input
+                                type="text"
+                                value={row.serialNumber || ''}
+                                onChange={(e) => handleRowChange(idx, 'serialNumber', e.target.value)}
+                                placeholder="Serial No."
+                                className="px-1.5 py-0.5 text-[10px] bg-slate-50 border border-slate-200 rounded font-mono"
+                              />
+                            </div>
+                          )}
                         </td>
 
                         {/* HSN */}
@@ -777,6 +1093,19 @@ export const AddSaleModal: React.FC<AddSaleModalProps> = ({
                             onChange={(e) => handleRowChange(idx, 'qty', parseFloat(e.target.value) || 0)}
                             className="w-full px-2 py-1.5 text-xs bg-white border border-slate-300 rounded-md font-mono"
                           />
+                          {(() => {
+                            if (!appSettings?.enableWeightUnits || !row.itemId) return null;
+                            const baseItem = itemsList.find((i) => String(i.id) === String(row.itemId));
+                            if (!baseItem || baseItem.unit === row.unit || !isWeightUnit(baseItem.unit) || !isWeightUnit(row.unit)) {
+                              return null;
+                            }
+                            const eqQty = convertWeightQty(Number(row.qty) || 0, row.unit, baseItem.unit);
+                            return (
+                              <div className="text-[9px] text-teal-700 font-mono mt-0.5 whitespace-nowrap">
+                                = {eqQty} {baseItem.unit}
+                              </div>
+                            );
+                          })()}
                         </td>
 
                         {/* Free Qty */}
@@ -794,17 +1123,28 @@ export const AddSaleModal: React.FC<AddSaleModalProps> = ({
 
                         {/* Unit */}
                         <td className="py-2 px-3">
-                          <select
-                            value={row.unit}
-                            onChange={(e) => handleRowChange(idx, 'unit', e.target.value)}
-                            className="w-full px-1.5 py-1.5 text-xs bg-white border border-slate-300 rounded-md"
-                          >
-                            {STANDARD_UNITS.map((u) => (
-                              <option key={u} value={u}>
-                                {u}
-                              </option>
-                            ))}
-                          </select>
+                          {(() => {
+                            const baseItem = row.itemId
+                              ? itemsList.find((i) => String(i.id) === String(row.itemId))
+                              : undefined;
+                            const unitOptions =
+                              appSettings?.enableWeightUnits && baseItem && isWeightUnit(baseItem.unit)
+                                ? getCompatibleUnits(baseItem.unit)
+                                : STANDARD_UNITS;
+                            return (
+                              <select
+                                value={row.unit}
+                                onChange={(e) => handleRowChange(idx, 'unit', e.target.value)}
+                                className="w-full px-1.5 py-1.5 text-xs bg-white border border-slate-300 rounded-md"
+                              >
+                                {unitOptions.map((u) => (
+                                  <option key={u} value={u}>
+                                    {u}
+                                  </option>
+                                ))}
+                              </select>
+                            );
+                          })()}
                         </td>
 
                         {/* Price Unit */}
@@ -989,36 +1329,38 @@ export const AddSaleModal: React.FC<AddSaleModalProps> = ({
                 )}
 
                 <div className="border-t border-slate-300 pt-2 flex items-center justify-between text-base font-bold text-slate-900">
-                  <span>Total Amount:</span>
+                  <span>{isEstimate ? 'Estimated Total:' : 'Total Amount:'}</span>
                   <span className="font-mono text-lg text-rose-600 tabular-nums">{formatINR(totalAmount)}</span>
                 </div>
 
-                <div className="pt-2 border-t border-slate-200 grid grid-cols-2 gap-3 items-center">
-                  <div>
-                    <label className="block text-[11px] font-semibold text-slate-700 mb-1">
-                      Received Amount (₹)
-                    </label>
-                    <input
-                      type="number"
-                      step="0.01"
-                      value={receivedAmount}
-                      onChange={(e) => {
-                        setIsDirty(true);
-                        setReceivedAmount(e.target.value);
-                      }}
-                      className="w-full px-2.5 py-1.5 text-xs bg-white border border-slate-300 rounded-md font-mono"
-                    />
-                  </div>
+                {!isEstimate && !isJobWork && (
+                  <div className="pt-2 border-t border-slate-200 grid grid-cols-2 gap-3 items-center">
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                        Received Amount (₹)
+                      </label>
+                      <input
+                        type="number"
+                        step="0.01"
+                        value={receivedAmount}
+                        onChange={(e) => {
+                          setIsDirty(true);
+                          setReceivedAmount(e.target.value);
+                        }}
+                        className="w-full px-2.5 py-1.5 text-xs bg-white border border-slate-300 rounded-md font-mono"
+                      />
+                    </div>
 
-                  <div>
-                    <label className="block text-[11px] font-semibold text-slate-700 mb-1">
-                      Balance Due (₹)
-                    </label>
-                    <div className="px-2.5 py-1.5 text-xs bg-white border border-slate-200 rounded-md font-mono font-bold text-amber-700">
-                      {formatINR(balanceDue)}
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                        Balance Due (₹)
+                      </label>
+                      <div className="px-2.5 py-1.5 text-xs bg-white border border-slate-200 rounded-md font-mono font-bold text-amber-700">
+                        {formatINR(balanceDue)}
+                      </div>
                     </div>
                   </div>
-                </div>
+                )}
               </div>
             </div>
           </div>
@@ -1089,17 +1431,68 @@ export const AddSaleModal: React.FC<AddSaleModalProps> = ({
 
               <button
                 type="button"
-                onClick={handleSave}
+                onClick={() => handleSave(false)}
                 disabled={isSaving}
                 className="px-5 py-2 text-xs font-semibold text-white bg-rose-600 hover:bg-rose-700 disabled:opacity-50 rounded-lg shadow-sm transition-colors cursor-pointer flex items-center gap-1.5"
               >
-                <span>{isSaving ? 'Saving...' : 'Save'}</span>
+                <span>{isSaving ? 'Saving...' : isEstimate ? 'Save Estimate' : 'Save'}</span>
                 <span className="text-[10px] opacity-75 font-mono hidden sm:inline">(Ctrl+↵)</span>
               </button>
             </div>
           </div>
         </div>
       </div>
+
+      {/* Low Stock Warning Confirmation Dialog on Save */}
+      {lowStockPromptItems.length > 0 && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/70 backdrop-blur-xs p-4">
+          <div className="w-full max-w-md bg-white rounded-xl shadow-2xl border border-amber-200 overflow-hidden">
+            <div className="px-5 py-3.5 bg-amber-50 border-b border-amber-200 flex items-center gap-2.5 text-amber-900">
+              <AlertCircle className="w-5 h-5 text-amber-600 shrink-0" />
+              <div>
+                <h3 className="text-sm font-bold">Low Stock Alert on Save</h3>
+                <p className="text-[11px] text-amber-700">
+                  This sale will bring the following items at or below minimum stock:
+                </p>
+              </div>
+            </div>
+            <div className="p-4 space-y-2 max-h-60 overflow-y-auto">
+              {lowStockPromptItems.map((it, i) => (
+                <div
+                  key={i}
+                  className="p-2.5 rounded-lg bg-slate-50 border border-slate-200 flex items-center justify-between text-xs"
+                >
+                  <div>
+                    <div className="font-bold text-slate-900">{it.name}</div>
+                    <div className="text-[11px] text-slate-500 font-mono">
+                      Current: {it.currentStock} {it.unit} · Min Alert: {it.minAlert} {it.unit}
+                    </div>
+                  </div>
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-100 text-rose-700 font-mono">
+                    After Sale: {Math.max(0, it.newStock)} {it.unit}
+                  </span>
+                </div>
+              ))}
+            </div>
+            <div className="px-5 py-3 bg-slate-50 border-t border-slate-200 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setLowStockPromptItems([])}
+                className="px-3.5 py-1.5 text-xs font-semibold text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-100 cursor-pointer"
+              >
+                Cancel & Adjust Qty
+              </button>
+              <button
+                type="button"
+                onClick={() => handleSave(true)}
+                className="px-4 py-1.5 text-xs font-semibold text-white bg-amber-600 hover:bg-amber-700 rounded-lg shadow-xs cursor-pointer"
+              >
+                Proceed & Save Invoice
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Discard Confirmation Modal */}
       <ConfirmDiscardModal

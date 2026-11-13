@@ -31,6 +31,7 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
   const [unit, setUnit] = useState('PCS');
   const [category, setCategory] = useState('General');
   const [itemCode, setItemCode] = useState('');
+  const [barcode, setBarcode] = useState('');
   const [taxRate, setTaxRate] = useState<number>(18);
   const [salePrice, setSalePrice] = useState('0');
   const [saleTaxType, setSaleTaxType] = useState<PriceTaxType>('without_tax');
@@ -47,6 +48,7 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
   // Manufacturing Tab
   const [manufacturer, setManufacturer] = useState('');
   const [batchNumber, setBatchNumber] = useState('');
+  const [serialNumber, setSerialNumber] = useState('');
   const [expiryDate, setExpiryDate] = useState('');
 
   // Image
@@ -68,6 +70,7 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
         setUnit(itemToEdit.unit || 'PCS');
         setCategory(itemToEdit.category || 'General');
         setItemCode(itemToEdit.itemCode || '');
+        setBarcode(itemToEdit.barcode || '');
         setTaxRate(itemToEdit.taxRate || 0);
         setSalePrice(String(itemToEdit.salePrice || 0));
         setSaleTaxType(itemToEdit.salePriceTaxType || 'without_tax');
@@ -80,6 +83,7 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
         setLocation(itemToEdit.location || 'Main Godown');
         setManufacturer(itemToEdit.manufacturer || '');
         setBatchNumber(itemToEdit.batchNumber || '');
+        setSerialNumber(itemToEdit.serialNumber || '');
         setExpiryDate(itemToEdit.expiryDate || '');
         setImageUrl(itemToEdit.imageUrl || '');
       } else {
@@ -97,6 +101,7 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
     setUnit('PCS');
     setCategory('General');
     setItemCode('');
+    setBarcode('');
     setTaxRate(18);
     setSalePrice('0');
     setSaleTaxType('without_tax');
@@ -109,6 +114,7 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
     setLocation('Main Godown');
     setManufacturer('');
     setBatchNumber('');
+    setSerialNumber('');
     setExpiryDate('');
     setImageUrl('');
     setErrors({});
@@ -154,6 +160,7 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
         unit: unit.toUpperCase(),
         category: category.trim() || 'General',
         itemCode: itemCode.trim(),
+        barcode: barcode.trim(),
         taxRate: Number(taxRate) || 0,
         salePrice: parseFloat(salePrice) || 0,
         salePriceTaxType: saleTaxType,
@@ -166,6 +173,7 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
         location: location.trim(),
         manufacturer: manufacturer.trim(),
         batchNumber: batchNumber.trim(),
+        serialNumber: serialNumber.trim(),
         expiryDate,
         imageUrl,
       });
@@ -186,11 +194,11 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
     }
   };
 
-  // In-modal Keyboard shortcuts (Ctrl+Enter to Save, Esc to Close)
+  // In-modal Keyboard shortcuts (Ctrl+Enter or Ctrl+S to Save, Esc to Close)
   useEffect(() => {
     if (!isOpen) return;
     const handleModalKeyDown = (e: KeyboardEvent) => {
-      if (e.ctrlKey && e.key === 'Enter') {
+      if (e.ctrlKey && (e.key === 'Enter' || e.key === 's' || e.key === 'S')) {
         e.preventDefault();
         handleSave(false);
       } else if (e.key === 'Escape') {
@@ -200,7 +208,7 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
     };
     window.addEventListener('keydown', handleModalKeyDown);
     return () => window.removeEventListener('keydown', handleModalKeyDown);
-  }, [isOpen, name, salePrice, purchasePrice, taxRate, openingStock, isDirty]);
+  }, [isOpen, name, salePrice, purchasePrice, taxRate, openingStock, barcode, serialNumber, batchNumber, isDirty]);
 
   const handleAttemptClose = () => {
     if (isDirty) {
@@ -386,9 +394,9 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
                     />
                   </div>
 
-                  {/* Item Code / Barcode */}
+                  {/* Item Code */}
                   <div>
-                    <label className="block text-xs font-semibold text-slate-700 mb-1">Item Code / Barcode</label>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1">Item Code / SKU</label>
                     <input
                       type="text"
                       value={itemCode}
@@ -397,6 +405,21 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
                         setItemCode(e.target.value);
                       }}
                       placeholder="e.g. PROD-101"
+                      className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-300 rounded-lg font-mono"
+                    />
+                  </div>
+
+                  {/* Barcode */}
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1">Barcode (EAN / UPC / Custom)</label>
+                    <input
+                      type="text"
+                      value={barcode}
+                      onChange={(e) => {
+                        setIsDirty(true);
+                        setBarcode(e.target.value);
+                      }}
+                      placeholder="Scan or type barcode e.g. 8901234567890"
                       className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-300 rounded-lg font-mono"
                     />
                   </div>
@@ -573,6 +596,20 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
                         setBatchNumber(e.target.value);
                       }}
                       placeholder="e.g. BATCH-2026-X"
+                      className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-300 rounded-lg font-mono"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1">Default Serial No. (Optional)</label>
+                    <input
+                      type="text"
+                      value={serialNumber}
+                      onChange={(e) => {
+                        setIsDirty(true);
+                        setSerialNumber(e.target.value);
+                      }}
+                      placeholder="e.g. SN-001928"
                       className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-300 rounded-lg font-mono"
                     />
                   </div>

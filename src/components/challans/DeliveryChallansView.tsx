@@ -29,6 +29,7 @@ import { AddSaleModal } from '../modals/AddSaleModal';
 import { FloatingRowMenu, FloatingMenuItem } from '../common/FloatingRowMenu';
 import { ConfirmDeleteModal } from '../common/ConfirmDeleteModal';
 import { useToast } from '../common/Toast';
+import { useSecurity } from '../../contexts/SecurityContext';
 
 interface DeliveryChallansViewProps {
   businessProfile: BusinessProfile | null;
@@ -44,6 +45,7 @@ export const DeliveryChallansView: React.FC<DeliveryChallansViewProps> = ({
   onRefreshMetrics,
 }) => {
   const { showToast } = useToast();
+  const { requirePin } = useSecurity();
   const [challans, setChallans] = useState<Transaction[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'open' | 'converted' | 'cancelled'>('all');
@@ -124,6 +126,7 @@ export const DeliveryChallansView: React.FC<DeliveryChallansViewProps> = ({
     try {
       switch (actionType) {
         case 'view_edit':
+          if (!(await requirePin(`Enter PIN to edit ${tx.invoiceNo}`))) return;
           setChallanToEdit(tx);
           setShowCreateModal(true);
           break;
@@ -169,6 +172,7 @@ export const DeliveryChallansView: React.FC<DeliveryChallansViewProps> = ({
             showToast('This challan is already cancelled', 'info');
             return;
           }
+          if (!(await requirePin(`Enter PIN to cancel ${tx.invoiceNo}`))) return;
           await cancelTransaction(tx.id);
           await loadChallans();
           if (onRefreshMetrics) onRefreshMetrics();
@@ -180,6 +184,7 @@ export const DeliveryChallansView: React.FC<DeliveryChallansViewProps> = ({
             showToast('Converted challans cannot be deleted. Delete the linked sale first.', 'error');
             return;
           }
+          if (!(await requirePin(`Enter PIN to delete ${tx.invoiceNo}`))) return;
           setChallanToDelete(tx);
           setShowDeleteConfirm(true);
           break;

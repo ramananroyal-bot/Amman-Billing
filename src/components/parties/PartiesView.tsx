@@ -42,6 +42,7 @@ import { FloatingRowMenu, FloatingMenuItem } from '../common/FloatingRowMenu';
 import { RecordHistoryModal } from '../common/RecordHistoryModal';
 import { ConfirmDeleteModal } from '../common/ConfirmDeleteModal';
 import { useToast } from '../common/Toast';
+import { useSecurity } from '../../contexts/SecurityContext';
 
 interface PartiesViewProps {
   businessProfile: BusinessProfile | null;
@@ -51,6 +52,7 @@ interface PartiesViewProps {
   onEditSale?: (tx: Transaction) => void;
   onEditPurchase?: (tx: Transaction) => void;
   onRefreshMetrics?: () => void;
+  initialSelectedPartyId?: string | null;
 }
 
 export const PartiesView: React.FC<PartiesViewProps> = ({
@@ -61,8 +63,10 @@ export const PartiesView: React.FC<PartiesViewProps> = ({
   onEditSale,
   onEditPurchase,
   onRefreshMetrics,
+  initialSelectedPartyId,
 }) => {
   const { showToast } = useToast();
+  const { requirePin } = useSecurity();
   const [parties, setParties] = useState<Party[]>([]);
   const [partyBalances, setPartyBalances] = useState<Record<string, { balance: number; type: 'to_receive' | 'to_pay' }>>({});
   const [selectedParty, setSelectedParty] = useState<Party | null>(null);
@@ -112,6 +116,15 @@ export const PartiesView: React.FC<PartiesViewProps> = ({
     loadParties();
   }, []);
 
+  useEffect(() => {
+    if (initialSelectedPartyId && parties.length > 0) {
+      const target = parties.find((p) => p.id === initialSelectedPartyId);
+      if (target) {
+        selectParty(target);
+      }
+    }
+  }, [initialSelectedPartyId, parties]);
+
   const loadParties = async () => {
     const list = await getParties();
     list.sort((a, b) => a.name.localeCompare(b.name));
@@ -124,8 +137,15 @@ export const PartiesView: React.FC<PartiesViewProps> = ({
     }
     setPartyBalances(balances);
 
-    // Default select first party if none selected
+    // Default select first party if none selected (or deep-linked party)
     if (list.length > 0) {
+      if (initialSelectedPartyId) {
+        const target = list.find((p) => p.id === initialSelectedPartyId);
+        if (target) {
+          await selectParty(target);
+          return;
+        }
+      }
       if (!selectedParty || !list.some((p) => p.id === selectedParty.id)) {
         await selectParty(list[0]);
       } else {
@@ -222,6 +242,7 @@ export const PartiesView: React.FC<PartiesViewProps> = ({
     try {
       switch (actionType) {
         case 'view_edit':
+          if (!(await requirePin(`Enter PIN to edit ${tx.invoiceNo}`))) return;
           if (tx.type === 'purchase_bill' || tx.type === 'purchase_return') {
             if (onEditPurchase) {
               onEditPurchase(tx);
@@ -238,6 +259,7 @@ export const PartiesView: React.FC<PartiesViewProps> = ({
           break;
 
         case 'delete':
+          if (!(await requirePin(`Enter PIN to delete ${tx.invoiceNo}`))) return;
           setDeleteDialogConfig({
             isOpen: true,
             type: 'transaction',
@@ -851,7 +873,7 @@ export const PartiesView: React.FC<PartiesViewProps> = ({
                           >
                             <td className="py-2.5 px-4 font-mono text-slate-600">{formatDate(tx.date)}</td>
                             <td className="py-2.5 px-4 capitalize font-medium text-slate-900">
-                              {tx.type.replace('_', ' ')}
+                              {tx.type.replace(/_/g, ' ')}
                             </td>
                             <td className="py-2.5 px-4 font-mono font-semibold text-slate-900">{tx.invoiceNo}</td>
                             <td className="py-2.5 px-4 uppercase font-mono text-[11px] text-slate-600">

@@ -38,11 +38,16 @@ import { STANDARD_UNITS } from '../../types/indianStates';
 interface ItemsViewProps {
   onViewTransaction: (tx: Transaction) => void;
   onRefreshMetrics?: () => void;
+  initialSelectedItemId?: string | null;
 }
 
 type MainTab = 'products' | 'services' | 'categories' | 'units';
 
-export const ItemsView: React.FC<ItemsViewProps> = ({ onViewTransaction, onRefreshMetrics }) => {
+export const ItemsView: React.FC<ItemsViewProps> = ({
+  onViewTransaction,
+  onRefreshMetrics,
+  initialSelectedItemId,
+}) => {
   const { showToast } = useToast();
   const [activeTab, setActiveTab] = useState<MainTab>('products');
   const [items, setItems] = useState<Item[]>([]);
@@ -77,12 +82,30 @@ export const ItemsView: React.FC<ItemsViewProps> = ({ onViewTransaction, onRefre
     loadItems();
   }, []);
 
+  useEffect(() => {
+    if (initialSelectedItemId && items.length > 0) {
+      const target = items.find((i) => i.id === initialSelectedItemId);
+      if (target) {
+        setActiveTab(target.type === 'service' ? 'services' : 'products');
+        selectItem(target);
+      }
+    }
+  }, [initialSelectedItemId, items]);
+
   const loadItems = async () => {
     const list = await getItems();
     list.sort((a, b) => a.name.localeCompare(b.name));
     setItems(list);
 
     if (list.length > 0) {
+      if (initialSelectedItemId) {
+        const target = list.find((i) => i.id === initialSelectedItemId);
+        if (target) {
+          setActiveTab(target.type === 'service' ? 'services' : 'products');
+          await selectItem(target);
+          return;
+        }
+      }
       if (!selectedItem || !list.some((i) => i.id === selectedItem.id)) {
         await selectItem(list[0]);
       } else {
@@ -112,8 +135,11 @@ export const ItemsView: React.FC<ItemsViewProps> = ({ onViewTransaction, onRefre
 
     if (categoryFilter !== 'All' && item.category !== categoryFilter) return false;
 
-    if (stockFilter === 'low' && item.minStockAlert > 0 && item.currentStock > item.minStockAlert) {
-      return false;
+    if (stockFilter === 'low') {
+      const isLow =
+        item.type === 'product' &&
+        (item.minStockAlert > 0 ? item.currentStock <= item.minStockAlert : item.currentStock <= 0);
+      if (!isLow) return false;
     }
     if (stockFilter === 'out' && item.currentStock > 0) {
       return false;
@@ -430,8 +456,9 @@ export const ItemsView: React.FC<ItemsViewProps> = ({ onViewTransaction, onRefre
                   const isMenuActive = activeMenuItemId === item.id;
                   const isLowStock =
                     item.type === 'product' &&
-                    item.minStockAlert > 0 &&
-                    item.currentStock <= item.minStockAlert;
+                    (item.minStockAlert > 0
+                      ? item.currentStock <= item.minStockAlert
+                      : item.currentStock <= 0);
 
                   return (
                     <div
@@ -446,10 +473,15 @@ export const ItemsView: React.FC<ItemsViewProps> = ({ onViewTransaction, onRefre
                       }`}
                     >
                       <div className="min-w-0 flex-1 pr-2">
-                        <div className="flex items-center gap-1.5">
+                        <div className="flex items-center gap-1.5 flex-wrap">
                           <span className="text-xs font-bold text-slate-900 truncate">{item.name}</span>
                           {isLowStock && (
-                            <span className="w-1.5 h-1.5 rounded-full bg-rose-500 shrink-0" title="Low Stock" />
+                            <span
+                              className="px-1.5 py-0.5 rounded-full text-[9px] font-bold bg-rose-100 text-rose-700 border border-rose-200 shrink-0"
+                              title={`Min stock alert: ${item.minStockAlert}`}
+                            >
+                              {item.currentStock <= 0 ? 'Out of Stock' : 'Low Stock'}
+                            </span>
                           )}
                         </div>
                         <div className="text-[11px] text-slate-500 font-mono mt-0.5 truncate">
@@ -544,7 +576,7 @@ export const ItemsView: React.FC<ItemsViewProps> = ({ onViewTransaction, onRefre
                       )}
 
                       <div>
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2 flex-wrap">
                           <h2 className="text-base font-bold text-slate-900">{selectedItem.name}</h2>
                           <span className="px-2 py-0.5 text-[10px] font-semibold bg-slate-100 text-slate-700 rounded-md">
                             {selectedItem.category}
@@ -552,6 +584,14 @@ export const ItemsView: React.FC<ItemsViewProps> = ({ onViewTransaction, onRefre
                           <span className="px-2 py-0.5 text-[10px] font-medium bg-slate-100 text-slate-600 rounded-md capitalize">
                             {selectedItem.type}
                           </span>
+                          {selectedItem.type === 'product' &&
+                            (selectedItem.minStockAlert > 0
+                              ? selectedItem.currentStock <= selectedItem.minStockAlert
+                              : selectedItem.currentStock <= 0) && (
+                              <span className="px-2 py-0.5 text-[10px] font-bold bg-rose-100 text-rose-700 border border-rose-200 rounded-full">
+                                {selectedItem.currentStock <= 0 ? 'Out of Stock' : 'Low Stock'}
+                              </span>
+                            )}
                         </div>
                         <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-500 font-mono">
                           {selectedItem.hsn && <span>HSN: {selectedItem.hsn}</span>}

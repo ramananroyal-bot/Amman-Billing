@@ -1,5 +1,15 @@
 import React, { useState, useEffect } from 'react';
-import { X, Monitor, Download, ShieldCheck, HardDrive, CheckCircle2, Terminal, ExternalLink, Laptop } from 'lucide-react';
+import {
+  X,
+  Monitor,
+  Download,
+  ShieldCheck,
+  HardDrive,
+  CheckCircle2,
+  Terminal,
+  Laptop,
+  Info,
+} from 'lucide-react';
 
 interface DesktopAppModalProps {
   isOpen: boolean;
@@ -9,6 +19,7 @@ interface DesktopAppModalProps {
 export const DesktopAppModal: React.FC<DesktopAppModalProps> = ({ isOpen, onClose }) => {
   const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
   const [isInstalled, setIsInstalled] = useState(false);
+  const [showManualHint, setShowManualHint] = useState(false);
   const [activeTab, setActiveTab] = useState<'pwa' | 'electron'>('pwa');
 
   const isDesktopElectron = typeof window !== 'undefined' && Boolean(window.electronAPI?.isDesktop);
@@ -22,6 +33,7 @@ export const DesktopAppModal: React.FC<DesktopAppModalProps> = ({ isOpen, onClos
     const handleAppInstalled = () => {
       setIsInstalled(true);
       setDeferredPrompt(null);
+      setShowManualHint(false);
     };
 
     window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
@@ -37,18 +49,29 @@ export const DesktopAppModal: React.FC<DesktopAppModalProps> = ({ isOpen, onClos
     };
   }, []);
 
+  useEffect(() => {
+    if (!isOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [isOpen, onClose]);
+
   const handleInstallPWA = async () => {
     if (deferredPrompt) {
       deferredPrompt.prompt();
       const choiceResult = await deferredPrompt.userChoice;
       if (choiceResult.outcome === 'accepted') {
         setIsInstalled(true);
+        setShowManualHint(false);
       }
       setDeferredPrompt(null);
     } else {
-      alert(
-        'To install this app on your Windows desktop:\n\n1. In Chrome / Edge, click the Install icon (computer with down arrow) in the address bar.\n2. Or click the 3 dots menu -> "Cast, save, and share" -> "Install Amman Billing & Accounting".'
-      );
+      setShowManualHint(true);
     }
   };
 
@@ -132,10 +155,10 @@ export const DesktopAppModal: React.FC<DesktopAppModalProps> = ({ isOpen, onClos
                       Installs a native standalone desktop app icon on your Windows Desktop and Start Menu. No coding or command prompt required.
                     </p>
                   </div>
-                  {isInstalled ? (
+                  {isInstalled || isDesktopElectron ? (
                     <span className="shrink-0 flex items-center gap-1 px-3 py-1 bg-emerald-100 text-emerald-800 rounded-md text-xs font-semibold">
                       <CheckCircle2 className="w-3.5 h-3.5" />
-                      Installed
+                      {isDesktopElectron ? 'Desktop Mode' : 'Installed'}
                     </span>
                   ) : (
                     <button
@@ -148,6 +171,15 @@ export const DesktopAppModal: React.FC<DesktopAppModalProps> = ({ isOpen, onClos
                     </button>
                   )}
                 </div>
+
+                {showManualHint && (
+                  <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg text-[11px] text-amber-900 flex items-start gap-2">
+                    <Info className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                    <div>
+                      Direct install prompt is blocked inside embedded preview frames. Open the app in its own browser tab, then click the Install icon in Chrome/Edge&apos;s address bar.
+                    </div>
+                  </div>
+                )}
 
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 pt-2">
                   <div className="p-2.5 bg-white rounded-lg border border-slate-200 text-slate-700 text-[11px] space-y-1">
@@ -177,11 +209,10 @@ export const DesktopAppModal: React.FC<DesktopAppModalProps> = ({ isOpen, onClos
                 </div>
               </div>
 
-              {/* Instructions if button not available */}
               <div className="p-4 bg-blue-50/60 rounded-xl border border-blue-100 text-xs text-blue-900 space-y-2">
                 <span className="font-bold">Manual Install Steps (Google Chrome or Microsoft Edge):</span>
                 <ol className="list-decimal list-inside space-y-1 text-[11px] text-blue-800">
-                  <li>Click the <strong>Install Amman Billing & Accounting</strong> icon in the address bar.</li>
+                  <li>Click the <strong>Install Amman Billing &amp; Accounting</strong> icon in the address bar.</li>
                   <li>Or open the browser menu (<strong>⋮</strong> or <strong>…</strong>) &rarr; <strong>Install Amman Billing</strong>.</li>
                   <li>Check &quot;Create Desktop Shortcut&quot; and click <strong>Install</strong>.</li>
                 </ol>
@@ -192,16 +223,17 @@ export const DesktopAppModal: React.FC<DesktopAppModalProps> = ({ isOpen, onClos
               <div className="p-4 bg-slate-900 text-slate-100 rounded-xl space-y-3 font-mono text-xs">
                 <div className="flex items-center justify-between pb-2 border-b border-slate-800 text-[11px] text-slate-400">
                   <span>Windows .EXE Packaging Configuration</span>
-                  <span className="text-emerald-400">electron-builder v24+</span>
+                  <span className="text-emerald-400">electron-builder Ready</span>
                 </div>
                 <p className="text-slate-300 font-sans text-xs">
-                  The application includes complete configuration files (<code>electron/main.cjs</code>, <code>electron/preload.cjs</code>, and <code>electron-builder.json</code>).
+                  All packaging files are preconfigured (<code>electron/main.cjs</code>, <code>electron/preload.cjs</code>, <code>electron-builder.json</code>, <code>public/icon-512.png</code>, and <code>build-windows-exe.bat</code>).
                 </p>
                 <div className="bg-slate-950 p-3 rounded-lg border border-slate-800 space-y-1.5 text-[11px]">
-                  <p className="text-slate-500"># 1. Build the production web bundle</p>
-                  <p className="text-emerald-400">npm run build</p>
-                  <p className="text-slate-500 pt-1"># 2. Package standalone Windows installer (.exe)</p>
-                  <p className="text-emerald-400">npx electron-builder --win nsis</p>
+                  <p className="text-slate-500"># Option A: Double-click build-windows-exe.bat on Windows</p>
+                  <p className="text-amber-300">build-windows-exe.bat</p>
+                  <p className="text-slate-500 pt-1"># Option B: Manual CLI build (x64 NSIS + Portable)</p>
+                  <p className="text-emerald-400">npm install --no-save electron electron-builder</p>
+                  <p className="text-emerald-400">npm run electron:build:all</p>
                 </div>
               </div>
 
@@ -210,15 +242,21 @@ export const DesktopAppModal: React.FC<DesktopAppModalProps> = ({ isOpen, onClos
                 <ul className="space-y-1.5 text-[11px] text-slate-600">
                   <li className="flex items-center gap-2">
                     <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
-                    <span><strong>release/Amman-Billing-Setup-1.0.0.exe</strong>: Standard Windows NSIS installer with desktop & start menu shortcuts.</span>
+                    <span>
+                      <strong>release/Amman-Billing-Setup-1.0.0.exe</strong>: Standard Windows NSIS installer with Desktop &amp; Start Menu shortcuts.
+                    </span>
                   </li>
                   <li className="flex items-center gap-2">
                     <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
-                    <span><strong>release/Amman-Billing-1.0.0-portable.exe</strong>: Zero-install portable edition that runs directly from any USB flash drive.</span>
+                    <span>
+                      <strong>release/Amman-Billing-1.0.0-portable.exe</strong>: Zero-install portable edition that runs directly from any folder or USB drive.
+                    </span>
                   </li>
                   <li className="flex items-center gap-2">
                     <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
-                    <span><strong>Zero Cloud Dependence</strong>: Operates 100% locally with high-performance persistent database.</span>
+                    <span>
+                      <strong>Data Portability</strong>: Use <em>Sync &amp; Backup &rarr; Export Backup JSON (v4.0)</em> to move records seamlessly between browser and Desktop .EXE.
+                    </span>
                   </li>
                 </ul>
               </div>
@@ -228,7 +266,7 @@ export const DesktopAppModal: React.FC<DesktopAppModalProps> = ({ isOpen, onClos
 
         {/* Footer */}
         <div className="px-6 py-3.5 bg-slate-50 border-t border-slate-200 flex items-center justify-between text-xs">
-          <span className="text-slate-500 text-[11px]">Amman Billing & Accounting · Release v1.0.0</span>
+          <span className="text-slate-500 text-[11px]">Amman Billing &amp; Accounting · Release v1.0.0</span>
           <button
             type="button"
             onClick={onClose}

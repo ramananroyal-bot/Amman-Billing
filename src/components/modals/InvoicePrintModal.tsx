@@ -1,8 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { X, Printer, Download, Share2, Building2, Receipt, FileText, QrCode } from 'lucide-react';
+import QRCode from 'qrcode';
 import { BusinessProfile, Transaction, AppSettings } from '../../types';
 import { formatINR, formatDate, numberToIndianWords } from '../../utils/formatters';
 import { getAppSettings } from '../../db/indexedDB';
+import { useTranslation, InvoicePrintLanguage } from '../../i18n/LanguageContext';
 
 interface InvoicePrintModalProps {
   isOpen: boolean;
@@ -19,8 +21,10 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({
   transaction,
   businessProfile,
 }) => {
+  const { invoicePrintLanguage, setInvoicePrintLanguage, getInvoiceLabel } = useTranslation();
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [format, setFormat] = useState<PrintFormat>('a4');
+  const [qrCodeUrl, setQrCodeUrl] = useState<string>('');
 
   useEffect(() => {
     if (isOpen) {
@@ -28,44 +32,71 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({
     }
   }, [isOpen]);
 
+  // Generate UPI QR offline locally as a Data URL with exact invoice amount pre-filled
+  const upiId = businessProfile?.bankDetails?.upiId?.trim() || '';
+  const showQrEnabled = settings?.printShowUPIQR !== false;
+  useEffect(() => {
+    if (!isOpen || !transaction || !upiId || !showQrEnabled) {
+      setQrCodeUrl('');
+      return;
+    }
+    const payeeName = encodeURIComponent(businessProfile?.businessName || 'Business');
+    const amountStr = (transaction.totalAmount || 0).toFixed(2);
+    const upiPayLink = `upi://pay?pa=${encodeURIComponent(upiId)}&pn=${payeeName}&am=${amountStr}&cu=INR&tn=${encodeURIComponent(
+      transaction.invoiceNo || ''
+    )}`;
+    QRCode.toDataURL(upiPayLink, { width: 160, margin: 1 })
+      .then((url) => setQrCodeUrl(url))
+      .catch(() => setQrCodeUrl(''));
+  }, [isOpen, transaction, upiId, showQrEnabled, businessProfile?.businessName]);
+
+  // Keyboard shortcuts: Ctrl+P to print, Esc to close print modal
+  useEffect(() => {
+    if (!isOpen) return;
+    const handleKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'p' || e.key === 'P')) {
+        e.preventDefault();
+        window.print();
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', handleKey);
+    return () => window.removeEventListener('keydown', handleKey);
+  }, [isOpen, onClose]);
+
   if (!isOpen || !transaction) return null;
 
   const isSale = transaction.type === 'sale_invoice';
+  const isEstimate = transaction.type === 'estimate';
   const isComposition = settings?.isCompositionScheme;
-  const invoiceTitle = isComposition
-    ? 'BILL OF SUPPLY'
+  const invoiceTitle = isEstimate
+    ? getInvoiceLabel('estimate')
+    : isComposition && isSale
+    ? getInvoiceLabel('billOfSupply')
     : isSale
-    ? 'TAX INVOICE'
+    ? getInvoiceLabel('taxInvoice')
     : transaction.type === 'purchase_bill'
-    ? 'PURCHASE BILL'
+    ? getInvoiceLabel('purchaseBill')
     : transaction.type === 'sale_return'
-    ? 'CREDIT NOTE (SALE RETURN)'
+    ? getInvoiceLabel('creditNote')
     : transaction.type === 'purchase_return'
-    ? 'DEBIT NOTE (PURCHASE RETURN)'
+    ? getInvoiceLabel('debitNote')
     : transaction.type === 'payment_in'
-    ? 'PAYMENT RECEIPT'
+    ? getInvoiceLabel('paymentReceipt')
     : transaction.type === 'payment_out'
-    ? 'PAYMENT VOUCHER'
+    ? getInvoiceLabel('paymentVoucher')
     : transaction.type === 'delivery_challan'
-    ? 'DELIVERY CHALLAN'
+    ? getInvoiceLabel('deliveryChallan')
+    : transaction.type === 'job_work_out'
+    ? getInvoiceLabel('jobWorkOut')
+    : transaction.type === 'job_work_in'
+    ? getInvoiceLabel('jobWorkIn')
     : 'TRANSACTION RECEIPT';
 
   const isInterState = transaction.igst > 0;
   const accentColor = settings?.invoiceColor || '#e11d48';
-
-  // Generate UPI QR Code URL for easy scanning
-  const upiId = businessProfile?.bankDetails?.upiId;
-  const payeeName = encodeURIComponent(businessProfile?.businessName || 'Business');
-  const amountStr = transaction.totalAmount.toFixed(2);
-  const upiPayLink = upiId
-    ? `upi://pay?pa=${encodeURIComponent(upiId)}&pn=${payeeName}&am=${amountStr}&cu=INR&tn=${encodeURIComponent(
-        transaction.invoiceNo
-      )}`
-    : '';
-
-  const qrCodeUrl = upiPayLink && settings?.printShowUPIQR !== false
-    ? `https://api.qrserver.com/v1/create-qr-code/?size=120x120&data=${encodeURIComponent(upiPayLink)}`
-    : '';
 
   const handlePrint = () => {
     window.print();
@@ -216,7 +247,31 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({
             </button>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            {/* Print Language Switcher (English / Tamil / Bilingual) */}
+            <div className="flex items-center bg-slate-800 p-0.5 rounded-lg border border-slate-700 text-[11px]">
+              {(
+                [
+                  ['en', 'EN'],
+                  ['ta', 'தமிழ்'],
+                  ['bilingual', 'EN + தமிழ்'],
+                ] as [InvoicePrintLanguage, string][]
+              ).map(([langCode, langLabel]) => (
+                <button
+                  key={langCode}
+                  type="button"
+                  onClick={() => setInvoicePrintLanguage(langCode)}
+                  className={`px-2 py-1 rounded font-medium transition-colors cursor-pointer ${
+                    invoicePrintLanguage === langCode
+                      ? 'bg-emerald-600 text-white shadow-xs'
+                      : 'text-slate-400 hover:text-white'
+                  }`}
+                >
+                  {langLabel}
+                </button>
+              ))}
+            </div>
+
             {transaction.totalAmount >= 50000 && (
               <button
                 type="button"
@@ -287,7 +342,7 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({
                   )}
 
                   <div className="space-y-1">
-                    <h1 className="text-xl font-bold tracking-tight text-slate-950 font-serif">
+                    <h1 className="text-xl font-bold tracking-tight text-slate-950 font-sans">
                       {businessProfile?.businessName || 'Business Firm'}
                     </h1>
                     <p className="text-xs text-slate-600 max-w-md whitespace-pre-line leading-relaxed">
@@ -326,7 +381,7 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({
                         ? 'Credit Note No: '
                         : transaction.type === 'purchase_return'
                         ? 'Debit Note No: '
-                        : 'Invoice No: '}
+                        : `${getInvoiceLabel('invoiceNo')}: `}
                     </span>
                     {transaction.invoiceNo}
                   </div>
@@ -349,12 +404,14 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({
                     </div>
                   )}
                   <div className="text-slate-600">
-                    <span className="font-sans text-xs text-slate-500">Date: </span>
+                    <span className="font-sans text-xs text-slate-500">{getInvoiceLabel('date')}: </span>
                     {formatDate(transaction.date)}
                   </div>
                   {transaction.dueDate && (
                     <div className="text-slate-600">
-                      <span className="font-sans text-xs text-slate-500">Due Date: </span>
+                      <span className="font-sans text-xs text-slate-500">
+                        {isEstimate ? `${getInvoiceLabel('validUntil')}: ` : `${getInvoiceLabel('dueDate')}: `}
+                      </span>
                       {formatDate(transaction.dueDate)}
                     </div>
                   )}
@@ -376,7 +433,7 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({
                 {/* Bill To */}
                 <div>
                   <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block mb-1">
-                    Bill To / Buyer
+                    {getInvoiceLabel('billTo')}
                   </span>
                   <div className="text-sm font-bold text-slate-900">{transaction.partyName}</div>
                   <p className="text-xs text-slate-600 mt-0.5 whitespace-pre-line leading-relaxed">
@@ -477,16 +534,16 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({
                 ) : (
                   <table className="w-full text-left border-collapse border border-slate-300">
                     <thead>
-                      <tr className="bg-slate-100 text-slate-800 font-bold border-b border-slate-300 text-[10px] uppercase tracking-wider">
+                      <tr className="bg-slate-100 text-slate-800 font-bold border-b border-slate-300 text-[10px] uppercase tracking-wider font-sans">
                         <th className="py-2 px-2.5 border-r border-slate-300 text-center w-8">#</th>
-                        <th className="py-2 px-3 border-r border-slate-300">Item Description</th>
-                        <th className="py-2 px-2.5 border-r border-slate-300 text-center w-16">HSN</th>
-                        <th className="py-2 px-2.5 border-r border-slate-300 text-right w-14">Qty</th>
+                        <th className="py-2 px-3 border-r border-slate-300">{getInvoiceLabel('itemDescription')}</th>
+                        <th className="py-2 px-2.5 border-r border-slate-300 text-center w-16">{getInvoiceLabel('hsn')}</th>
+                        <th className="py-2 px-2.5 border-r border-slate-300 text-right w-14">{getInvoiceLabel('qty')}</th>
                         <th className="py-2 px-2 border-r border-slate-300 text-center w-12">Unit</th>
-                        <th className="py-2 px-2.5 border-r border-slate-300 text-right w-20">Rate (₹)</th>
-                        <th className="py-2 px-2 border-r border-slate-300 text-center w-12">Tax %</th>
-                        <th className="py-2 px-2.5 border-r border-slate-300 text-right w-20">Tax (₹)</th>
-                        <th className="py-2 px-3 text-right w-24">Amount (₹)</th>
+                        <th className="py-2 px-2.5 border-r border-slate-300 text-right w-20">{getInvoiceLabel('rate')} (₹)</th>
+                        <th className="py-2 px-2 border-r border-slate-300 text-center w-12">{getInvoiceLabel('tax')} %</th>
+                        <th className="py-2 px-2.5 border-r border-slate-300 text-right w-20">{getInvoiceLabel('tax')} (₹)</th>
+                        <th className="py-2 px-3 text-right w-24">{getInvoiceLabel('amount')} (₹)</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-200 font-mono text-[11px]">
@@ -496,7 +553,14 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({
                             {idx + 1}
                           </td>
                           <td className="py-2 px-3 border-r border-slate-200 font-sans font-medium text-slate-900">
-                            {item.name}
+                            <div>{item.name}</div>
+                            {(item.batchNumber || item.serialNumber) && (
+                              <div className="text-[9px] text-slate-500 font-mono">
+                                {item.batchNumber ? `Batch: ${item.batchNumber}` : ''}
+                                {item.batchNumber && item.serialNumber ? ' · ' : ''}
+                                {item.serialNumber ? `S/N: ${item.serialNumber}` : ''}
+                              </div>
+                            )}
                           </td>
                           <td className="py-2 px-2 text-center border-r border-slate-200 text-slate-600">
                             {item.hsn || '-'}
@@ -588,38 +652,42 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({
                   {/* Total in Words */}
                   <div className="p-2.5 bg-slate-50 rounded-lg border border-slate-200">
                     <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">
-                      Total Amount in Words:
+                      {getInvoiceLabel('amountInWords')}:
                     </span>
                     <div className="text-xs font-semibold text-slate-900 italic mt-0.5">
                       {numberToIndianWords(transaction.totalAmount)}
                     </div>
                   </div>
 
-                  {/* Bank Details & QR */}
-                  {settings?.printShowBankDetails !== false && (
+                  {/* Bank Details & UPI Payment QR */}
+                  {(settings?.printShowBankDetails !== false || qrCodeUrl) && (
                     <div className="flex items-start gap-4 p-3 bg-slate-50 rounded-lg border border-slate-200">
-                      <div className="flex-1 space-y-1 text-[11px] font-mono">
-                        <span className="text-[10px] font-bold text-slate-700 uppercase tracking-wider block font-sans mb-1">
-                          Bank & Payment Details
-                        </span>
-                        {businessProfile?.bankDetails?.bankName && (
-                          <div>Bank: <span className="font-semibold">{businessProfile.bankDetails.bankName}</span></div>
-                        )}
-                        {businessProfile?.bankDetails?.accountNo && (
-                          <div>A/C No: <span className="font-semibold">{businessProfile.bankDetails.accountNo}</span></div>
-                        )}
-                        {businessProfile?.bankDetails?.ifsc && (
-                          <div>IFSC: <span className="font-semibold uppercase">{businessProfile.bankDetails.ifsc}</span></div>
-                        )}
-                        {businessProfile?.bankDetails?.upiId && (
-                          <div>UPI ID: <span className="font-semibold text-slate-900">{businessProfile.bankDetails.upiId}</span></div>
-                        )}
-                      </div>
+                      {settings?.printShowBankDetails !== false && (
+                        <div className="flex-1 space-y-1 text-[11px] font-mono">
+                          <span className="text-[10px] font-bold text-slate-700 uppercase tracking-wider block font-sans mb-1">
+                            {getInvoiceLabel('bankDetails')}
+                          </span>
+                          {businessProfile?.bankDetails?.bankName && (
+                            <div>Bank: <span className="font-semibold">{businessProfile.bankDetails.bankName}</span></div>
+                          )}
+                          {businessProfile?.bankDetails?.accountNo && (
+                            <div>A/C No: <span className="font-semibold">{businessProfile.bankDetails.accountNo}</span></div>
+                          )}
+                          {businessProfile?.bankDetails?.ifsc && (
+                            <div>IFSC: <span className="font-semibold uppercase">{businessProfile.bankDetails.ifsc}</span></div>
+                          )}
+                          {businessProfile?.bankDetails?.upiId && (
+                            <div>UPI ID: <span className="font-semibold text-slate-900">{businessProfile.bankDetails.upiId}</span></div>
+                          )}
+                        </div>
+                      )}
 
                       {qrCodeUrl && (
-                        <div className="w-20 h-20 bg-white p-1 rounded-md border border-slate-300 flex flex-col items-center justify-center shrink-0">
-                          <img src={qrCodeUrl} alt="UPI QR" className="w-full h-full object-contain" />
-                          <span className="text-[8px] font-semibold text-slate-600 mt-0.5">Scan to Pay</span>
+                        <div className="bg-white p-1.5 rounded-md border border-slate-300 flex flex-col items-center justify-center shrink-0">
+                          <img src={qrCodeUrl} alt="UPI QR" className="w-20 h-20 object-contain" />
+                          <span className="text-[8px] font-bold text-slate-700 mt-0.5">
+                            Scan &amp; Pay {formatINR(transaction.totalAmount)}
+                          </span>
                         </div>
                       )}
                     </div>
@@ -629,7 +697,7 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({
                 {/* Right Column: Financial Totals */}
                 <div className="col-span-5 bg-slate-50 p-3.5 rounded-lg border border-slate-200 space-y-2 text-xs font-mono">
                   <div className="flex items-center justify-between text-slate-600">
-                    <span className="font-sans">Taxable Subtotal:</span>
+                    <span className="font-sans">{getInvoiceLabel('subtotal')}:</span>
                     <span className="tabular-nums font-semibold">{formatINR(transaction.subtotal)}</span>
                   </div>
 
@@ -659,7 +727,7 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({
                   )}
 
                   <div className="border-t border-slate-300 pt-2 flex items-center justify-between text-sm font-bold text-slate-950 font-sans">
-                    <span>Grand Total:</span>
+                    <span>{getInvoiceLabel('grandTotal')}:</span>
                     <span
                       className="font-mono text-base tabular-nums"
                       style={{ color: accentColor }}
@@ -668,19 +736,23 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({
                     </span>
                   </div>
 
-                  <div className="border-t border-slate-200 pt-2 flex items-center justify-between text-slate-700 text-[11px]">
-                    <span className="font-sans">Received Amount:</span>
-                    <span className="tabular-nums font-semibold text-emerald-700">
-                      {formatINR(transaction.receivedAmount)}
-                    </span>
-                  </div>
+                  {!isEstimate && (
+                    <>
+                      <div className="border-t border-slate-200 pt-2 flex items-center justify-between text-slate-700 text-[11px]">
+                        <span className="font-sans">{getInvoiceLabel('received')}:</span>
+                        <span className="tabular-nums font-semibold text-emerald-700">
+                          {formatINR(transaction.receivedAmount)}
+                        </span>
+                      </div>
 
-                  <div className="flex items-center justify-between text-slate-900 font-bold text-xs pt-1">
-                    <span className="font-sans">Balance Due:</span>
-                    <span className="tabular-nums text-rose-600 font-mono">
-                      {formatINR(transaction.balanceDue)}
-                    </span>
-                  </div>
+                      <div className="flex items-center justify-between text-slate-900 font-bold text-xs pt-1">
+                        <span className="font-sans">{getInvoiceLabel('balanceDue')}:</span>
+                        <span className="tabular-nums text-rose-600 font-mono">
+                          {formatINR(transaction.balanceDue)}
+                        </span>
+                      </div>
+                    </>
+                  )}
                 </div>
               </div>
 
@@ -690,7 +762,7 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({
                   {settings?.printShowTerms !== false && (
                     <>
                       <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block mb-1">
-                        Terms & Conditions
+                        {getInvoiceLabel('terms')}
                       </span>
                       <p className="text-[11px] text-slate-600 whitespace-pre-line leading-relaxed">
                         {businessProfile?.terms ||
@@ -707,7 +779,7 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({
                         For {businessProfile?.businessName || 'Business Firm'}
                       </span>
                       <div className="border-t border-slate-400 w-48 pt-1 text-[11px] text-slate-600 text-center font-medium">
-                        {businessProfile?.signatoryText || 'Authorized Signatory'}
+                        {businessProfile?.signatoryText || getInvoiceLabel('authorizedSignatory')}
                       </div>
                     </>
                   )}
@@ -719,7 +791,7 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({
             /* THERMAL POS RECEIPT (80mm / 58mm) */
             /* ========================================================================= */
             <div
-              className={`bg-white p-4 shadow-sm border border-slate-200 print:border-none print:shadow-none print:p-0 font-mono text-slate-900 ${
+              className={`bg-white p-4 shadow-sm border border-slate-200 print:border-none print:shadow-none print:p-0 font-sans text-slate-900 ${
                 format === 'thermal_80'
                   ? 'thermal-receipt-80 w-[78mm] text-xs'
                   : 'thermal-receipt-58 w-[56mm] text-[10px]'
@@ -727,8 +799,11 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({
             >
               {/* Receipt Header */}
               <div className="text-center pb-2 border-b border-dashed border-slate-400 space-y-1">
-                <h2 className="font-bold text-sm tracking-tight uppercase">
-                  {businessProfile?.businessName || 'Amman Store'}
+                <div className="text-[10px] font-bold tracking-wider uppercase text-slate-600">
+                  {invoiceTitle}
+                </div>
+                <h2 className="font-bold text-sm tracking-tight uppercase font-sans">
+                  {businessProfile?.businessName || 'Business Firm'}
                 </h2>
                 <p className="text-[10px] leading-tight text-slate-600">{businessProfile?.address}</p>
                 {businessProfile?.gstin && (

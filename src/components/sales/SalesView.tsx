@@ -37,6 +37,7 @@ import { FloatingRowMenu, FloatingMenuItem } from '../common/FloatingRowMenu';
 import { RecordHistoryModal } from '../common/RecordHistoryModal';
 import { ConfirmDeleteModal } from '../common/ConfirmDeleteModal';
 import { useToast } from '../common/Toast';
+import { useSecurity } from '../../contexts/SecurityContext';
 
 interface SalesViewProps {
   businessProfile: BusinessProfile | null;
@@ -58,6 +59,7 @@ export const SalesView: React.FC<SalesViewProps> = ({
   onRefreshMetrics,
 }) => {
   const { showToast } = useToast();
+  const { requirePin } = useSecurity();
   const [transactions, setTransactions] = useState<Transaction[]>([]);
 
   // Filters
@@ -155,6 +157,7 @@ export const SalesView: React.FC<SalesViewProps> = ({
     try {
       switch (actionType) {
         case 'view_edit':
+          if (!(await requirePin(`Enter PIN to edit ${tx.invoiceNo}`))) return;
           onEditSale(tx);
           break;
 
@@ -194,6 +197,7 @@ export const SalesView: React.FC<SalesViewProps> = ({
             showToast('This invoice is already cancelled', 'info');
             return;
           }
+          if (!(await requirePin(`Enter PIN to cancel ${tx.invoiceNo}`))) return;
           await cancelTransaction(tx.id);
           await loadSales();
           if (onRefreshMetrics) onRefreshMetrics();
@@ -201,6 +205,7 @@ export const SalesView: React.FC<SalesViewProps> = ({
           break;
 
         case 'delete':
+          if (!(await requirePin(`Enter PIN to delete ${tx.invoiceNo}`))) return;
           setTxToDelete(tx);
           setShowDeleteConfirm(true);
           break;

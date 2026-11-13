@@ -17,6 +17,7 @@ import { getTransactions, getParties, deleteTransaction } from '../../db/indexed
 import { formatINR, formatDate } from '../../utils/formatters';
 import { ConfirmDeleteModal } from '../common/ConfirmDeleteModal';
 import { useToast } from '../common/Toast';
+import { useSecurity } from '../../contexts/SecurityContext';
 
 interface PaymentsViewProps {
   mode: 'payment_in' | 'payment_out';
@@ -47,6 +48,7 @@ export const PaymentsView: React.FC<PaymentsViewProps> = ({
   const [paymentToDelete, setPaymentToDelete] = useState<Transaction | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
   const { showToast } = useToast();
+  const { requirePin } = useSecurity();
 
   const loadData = async () => {
     setIsLoading(true);
@@ -341,7 +343,11 @@ export const PaymentsView: React.FC<PaymentsViewProps> = ({
                           </button>
                           <button
                             type="button"
-                            onClick={() => onEditPayment(p)}
+                            onClick={async () => {
+                              if (await requirePin(`Enter PIN to edit ${p.invoiceNo || p.receiptNo || 'payment'}`)) {
+                                onEditPayment(p);
+                              }
+                            }}
                             title="Edit Payment"
                             className="p-1 text-blue-600 hover:text-blue-800 hover:bg-blue-50 rounded-md transition-colors cursor-pointer"
                           >
@@ -349,7 +355,11 @@ export const PaymentsView: React.FC<PaymentsViewProps> = ({
                           </button>
                           <button
                             type="button"
-                            onClick={() => setPaymentToDelete(p)}
+                            onClick={async () => {
+                              if (await requirePin(`Enter PIN to delete ${p.invoiceNo || p.receiptNo || 'payment'}`)) {
+                                setPaymentToDelete(p);
+                              }
+                            }}
                             title="Delete Payment"
                             className="p-1 text-rose-500 hover:text-rose-700 hover:bg-rose-50 rounded-md transition-colors cursor-pointer"
                           >

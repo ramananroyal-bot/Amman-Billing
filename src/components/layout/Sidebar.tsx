@@ -22,8 +22,13 @@ import {
   ArrowUpRight,
   Receipt,
   Calculator,
+  Search,
+  Wrench,
+  ArrowLeftRight,
+  Check,
 } from 'lucide-react';
-import { BusinessProfile } from '../../types';
+import { BusinessProfile, FirmInfo } from '../../types';
+import { useTranslation } from '../../i18n/LanguageContext';
 
 export type NavView =
   | 'home'
@@ -35,6 +40,7 @@ export type NavView =
   | 'payments_in'
   | 'sale_returns'
   | 'delivery_challans'
+  | 'job_work'
   | 'purchases'
   | 'payments_out'
   | 'expenses'
@@ -49,9 +55,16 @@ interface SidebarProps {
   onOpenAddSale: () => void;
   onOpenAddPurchase: () => void;
   onOpenBusinessProfile: () => void;
+  onOpenGlobalSearch: () => void;
   businessProfile: BusinessProfile | null;
   isCollapsed: boolean;
   onToggleCollapse: () => void;
+  enableJobWork?: boolean;
+  enableMultipleFirms?: boolean;
+  firmsList?: FirmInfo[];
+  activeFirmId?: string;
+  onSwitchFirm?: (firmId: string) => void;
+  onOpenCreateFirm?: () => void;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -60,10 +73,19 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onOpenAddSale,
   onOpenAddPurchase,
   onOpenBusinessProfile,
+  onOpenGlobalSearch,
   businessProfile,
   isCollapsed,
   onToggleCollapse,
+  enableJobWork = false,
+  enableMultipleFirms = false,
+  firmsList = [],
+  activeFirmId,
+  onSwitchFirm,
+  onOpenCreateFirm,
 }) => {
+  const { t } = useTranslation();
+  const [firmMenuOpen, setFirmMenuOpen] = useState(false);
   const [partiesOpen, setPartiesOpen] = useState(
     currentView === 'parties' || currentView === 'whatsapp_connect'
   );
@@ -72,7 +94,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
       currentView === 'estimates' ||
       currentView === 'payments_in' ||
       currentView === 'sale_returns' ||
-      currentView === 'delivery_challans'
+      currentView === 'delivery_challans' ||
+      currentView === 'job_work'
   );
   const [purchaseOpen, setPurchaseOpen] = useState(
     currentView === 'purchases' ||
@@ -108,7 +131,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 {businessProfile?.businessName || 'My Business'}
               </div>
               <div className="text-[10px] text-slate-400 truncate">
-                {businessProfile?.gstin ? `GST: ${businessProfile.gstin.substring(0, 8)}...` : 'GST Billing'}
+                {businessProfile?.gstin ? `GST: ${businessProfile.gstin.substring(0, 8)}...` : t('app.name')}
               </div>
             </div>
           </button>
@@ -137,6 +160,32 @@ export const Sidebar: React.FC<SidebarProps> = ({
         </button>
       </div>
 
+      {/* Open Anything (Ctrl+F) Quick Search Box */}
+      <div className={`px-3 pt-3 pb-1 ${isCollapsed ? 'px-2' : ''}`}>
+        <button
+          type="button"
+          onClick={onOpenGlobalSearch}
+          title={`${t('nav.openAnything')} (Ctrl+F)`}
+          className={`w-full flex items-center justify-between gap-2 px-2.5 py-2 bg-[#1c2433] hover:bg-[#232d40] border border-[#2b374d] text-slate-300 hover:text-white rounded-lg text-xs transition-colors cursor-pointer ${
+            isCollapsed ? 'justify-center px-0 h-9' : ''
+          }`}
+        >
+          <div className="flex items-center gap-2 min-w-0">
+            <Search className="w-3.5 h-3.5 text-rose-400 shrink-0" />
+            {!isCollapsed && (
+              <span className="truncate text-[11px] text-slate-400">
+                {t('nav.openAnything')}...
+              </span>
+            )}
+          </div>
+          {!isCollapsed && (
+            <kbd className="px-1.5 py-0.5 text-[9px] font-mono bg-[#151b26] border border-[#2d3a50] rounded text-slate-400 shrink-0">
+              Ctrl+F
+            </kbd>
+          )}
+        </button>
+      </div>
+
       {/* Quick Action Buttons (Red Add Sale & Blue Add Purchase) */}
       <div className={`p-3 space-y-2 border-b border-[#222c3d] ${isCollapsed ? 'px-2' : ''}`}>
         <button
@@ -148,7 +197,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           }`}
         >
           <Plus className="w-4 h-4 shrink-0" />
-          {!isCollapsed && <span className="whitespace-nowrap">Add Sale</span>}
+          {!isCollapsed && <span className="whitespace-nowrap">{t('nav.addSale')}</span>}
         </button>
 
         <button
@@ -160,7 +209,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           }`}
         >
           <Plus className="w-4 h-4 shrink-0" />
-          {!isCollapsed && <span className="whitespace-nowrap">Add Purchase</span>}
+          {!isCollapsed && <span className="whitespace-nowrap">{t('nav.addPurchase')}</span>}
         </button>
       </div>
 
@@ -170,7 +219,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         <button
           type="button"
           onClick={() => onNavigate('home')}
-          title="Home Dashboard"
+          title={t('nav.home')}
           className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-xs font-medium transition-colors cursor-pointer ${
             currentView === 'home'
               ? 'bg-rose-600/15 text-rose-400 font-semibold'
@@ -178,10 +227,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
           }`}
         >
           <Home className="w-4 h-4 shrink-0" />
-          {!isCollapsed && <span>Home</span>}
+          {!isCollapsed && <span className="truncate">{t('nav.home')}</span>}
         </button>
 
-        {/* Parties (with sub-items: Party Details, WhatsApp Connect) */}
+        {/* Parties */}
         <div>
           <button
             type="button"
@@ -192,16 +241,16 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 setPartiesOpen(!partiesOpen);
               }
             }}
-            title="Parties & Contacts"
+            title={t('nav.parties')}
             className={`w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-xs font-medium transition-colors cursor-pointer ${
               currentView === 'parties' || currentView === 'whatsapp_connect'
                 ? 'bg-rose-600/15 text-rose-400 font-semibold'
                 : 'text-slate-300 hover:bg-[#1f293a] hover:text-white'
             }`}
           >
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-3 min-w-0">
               <Users className="w-4 h-4 shrink-0" />
-              {!isCollapsed && <span>Parties</span>}
+              {!isCollapsed && <span className="truncate">{t('nav.parties')}</span>}
             </div>
             {!isCollapsed && (
               <span className="text-slate-500">
@@ -219,7 +268,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   currentView === 'parties' ? 'text-rose-400 font-semibold' : 'text-slate-400 hover:text-white'
                 }`}
               >
-                Party Details
+                {t('nav.partyDetails')}
               </button>
               <button
                 type="button"
@@ -229,7 +278,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 }`}
               >
                 <MessageSquare className="w-3 h-3 text-emerald-500" />
-                <span>WhatsApp Connect</span>
+                <span>{t('nav.whatsappConnect')}</span>
               </button>
             </div>
           )}
@@ -239,7 +288,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         <button
           type="button"
           onClick={() => onNavigate('items')}
-          title="Items & Inventory"
+          title={t('nav.items')}
           className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-xs font-medium transition-colors cursor-pointer ${
             currentView === 'items'
               ? 'bg-rose-600/15 text-rose-400 font-semibold'
@@ -247,7 +296,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           }`}
         >
           <Package className="w-4 h-4 shrink-0" />
-          {!isCollapsed && <span>Items</span>}
+          {!isCollapsed && <span className="truncate">{t('nav.items')}</span>}
         </button>
 
         {/* Sale (Sale Invoice, Estimate/Quotation, Payment-In, Sale Return/Credit Note, Delivery Challan) */}
@@ -261,20 +310,21 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 setSaleOpen(!saleOpen);
               }
             }}
-            title="Sales"
+            title={t('nav.sale')}
             className={`w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-xs font-medium transition-colors cursor-pointer ${
               currentView === 'sales' ||
               currentView === 'estimates' ||
               currentView === 'payments_in' ||
               currentView === 'sale_returns' ||
-              currentView === 'delivery_challans'
+              currentView === 'delivery_challans' ||
+              currentView === 'job_work'
                 ? 'bg-rose-600/15 text-rose-400 font-semibold'
                 : 'text-slate-300 hover:bg-[#1f293a] hover:text-white'
             }`}
           >
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-3 min-w-0">
               <TrendingUp className="w-4 h-4 shrink-0" />
-              {!isCollapsed && <span>Sale</span>}
+              {!isCollapsed && <span className="truncate">{t('nav.sale')}</span>}
             </div>
             {!isCollapsed && (
               <span className="text-slate-500">
@@ -292,8 +342,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   currentView === 'sales' ? 'text-rose-400 font-semibold bg-rose-500/10' : 'text-slate-400 hover:text-white'
                 }`}
               >
-                <FileText className="w-3 h-3 text-rose-400" />
-                <span>Sale Invoice</span>
+                <FileText className="w-3 h-3 text-rose-400 shrink-0" />
+                <span className="truncate">{t('nav.saleInvoice')}</span>
               </button>
               <button
                 type="button"
@@ -302,8 +352,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   currentView === 'estimates' ? 'text-rose-400 font-semibold bg-rose-500/10' : 'text-slate-400 hover:text-white'
                 }`}
               >
-                <Receipt className="w-3 h-3 text-amber-400" />
-                <span>Estimate/Quotation</span>
+                <Receipt className="w-3 h-3 text-amber-400 shrink-0" />
+                <span className="truncate">{t('nav.estimateQuotation')}</span>
               </button>
               <button
                 type="button"
@@ -312,8 +362,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   currentView === 'payments_in' ? 'text-rose-400 font-semibold bg-rose-500/10' : 'text-slate-400 hover:text-white'
                 }`}
               >
-                <ArrowDownLeft className="w-3 h-3 text-emerald-400" />
-                <span>Payment-In</span>
+                <ArrowDownLeft className="w-3 h-3 text-emerald-400 shrink-0" />
+                <span className="truncate">{t('nav.paymentIn')}</span>
               </button>
               <button
                 type="button"
@@ -322,8 +372,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   currentView === 'sale_returns' ? 'text-rose-400 font-semibold bg-rose-500/10' : 'text-slate-400 hover:text-white'
                 }`}
               >
-                <RotateCcw className="w-3 h-3 text-amber-500" />
-                <span>Sale Return / Cr Note</span>
+                <RotateCcw className="w-3 h-3 text-amber-500 shrink-0" />
+                <span className="truncate">{t('nav.saleReturn')}</span>
               </button>
               <button
                 type="button"
@@ -332,9 +382,21 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   currentView === 'delivery_challans' ? 'text-rose-400 font-semibold bg-rose-500/10' : 'text-slate-400 hover:text-white'
                 }`}
               >
-                <Truck className="w-3 h-3 text-slate-400" />
-                <span>Delivery Challan</span>
+                <Truck className="w-3 h-3 text-slate-400 shrink-0" />
+                <span className="truncate">{t('nav.deliveryChallan')}</span>
               </button>
+              {enableJobWork && (
+                <button
+                  type="button"
+                  onClick={() => onNavigate('job_work')}
+                  className={`w-full text-left px-2.5 py-1.5 rounded-md text-[11px] flex items-center gap-1.5 transition-colors cursor-pointer ${
+                    currentView === 'job_work' ? 'text-rose-400 font-semibold bg-rose-500/10' : 'text-slate-400 hover:text-white'
+                  }`}
+                >
+                  <Wrench className="w-3 h-3 text-indigo-400 shrink-0" />
+                  <span className="truncate">{t('nav.jobWork')}</span>
+                </button>
+              )}
             </div>
           )}
         </div>
@@ -350,7 +412,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 setPurchaseOpen(!purchaseOpen);
               }
             }}
-            title="Purchases"
+            title={t('nav.purchase')}
             className={`w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-xs font-medium transition-colors cursor-pointer ${
               currentView === 'purchases' ||
               currentView === 'payments_out' ||
@@ -360,9 +422,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 : 'text-slate-300 hover:bg-[#1f293a] hover:text-white'
             }`}
           >
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-3 min-w-0">
               <ShoppingBag className="w-4 h-4 shrink-0" />
-              {!isCollapsed && <span>Purchase</span>}
+              {!isCollapsed && <span className="truncate">{t('nav.purchase')}</span>}
             </div>
             {!isCollapsed && (
               <span className="text-slate-500">
@@ -380,8 +442,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   currentView === 'purchases' ? 'text-blue-400 font-semibold bg-blue-500/10' : 'text-slate-400 hover:text-white'
                 }`}
               >
-                <FileText className="w-3 h-3 text-blue-400" />
-                <span>Purchase Bill</span>
+                <FileText className="w-3 h-3 text-blue-400 shrink-0" />
+                <span className="truncate">{t('nav.purchaseBill')}</span>
               </button>
               <button
                 type="button"
@@ -390,8 +452,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   currentView === 'payments_out' ? 'text-blue-400 font-semibold bg-blue-500/10' : 'text-slate-400 hover:text-white'
                 }`}
               >
-                <ArrowUpRight className="w-3 h-3 text-rose-400" />
-                <span>Payment-Out</span>
+                <ArrowUpRight className="w-3 h-3 text-rose-400 shrink-0" />
+                <span className="truncate">{t('nav.paymentOut')}</span>
               </button>
               <button
                 type="button"
@@ -400,8 +462,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   currentView === 'expenses' ? 'text-blue-400 font-semibold bg-blue-500/10' : 'text-slate-400 hover:text-white'
                 }`}
               >
-                <Calculator className="w-3 h-3 text-amber-400" />
-                <span>Expenses</span>
+                <Calculator className="w-3 h-3 text-amber-400 shrink-0" />
+                <span className="truncate">{t('nav.expenses')}</span>
               </button>
               <button
                 type="button"
@@ -410,8 +472,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   currentView === 'purchase_returns' ? 'text-blue-400 font-semibold bg-blue-500/10' : 'text-slate-400 hover:text-white'
                 }`}
               >
-                <RotateCcw className="w-3 h-3 text-indigo-400" />
-                <span>Purchase Return / Dr Note</span>
+                <RotateCcw className="w-3 h-3 text-indigo-400 shrink-0" />
+                <span className="truncate">{t('nav.purchaseReturn')}</span>
               </button>
             </div>
           )}
@@ -421,7 +483,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         <button
           type="button"
           onClick={() => onNavigate('reports')}
-          title="Financial Reports"
+          title={t('nav.reports')}
           className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-xs font-medium transition-colors cursor-pointer ${
             currentView === 'reports'
               ? 'bg-rose-600/15 text-rose-400 font-semibold'
@@ -429,14 +491,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
           }`}
         >
           <BarChart3 className="w-4 h-4 shrink-0" />
-          {!isCollapsed && <span>Reports</span>}
+          {!isCollapsed && <span className="truncate">{t('nav.reports')}</span>}
         </button>
 
         {/* Sync, Share & Backup */}
         <button
           type="button"
           onClick={() => onNavigate('sync_backup')}
-          title="Backup and Sync"
+          title={t('nav.syncBackup')}
           className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-xs font-medium transition-colors cursor-pointer ${
             currentView === 'sync_backup'
               ? 'bg-rose-600/15 text-rose-400 font-semibold'
@@ -444,14 +506,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
           }`}
         >
           <Cloud className="w-4 h-4 shrink-0" />
-          {!isCollapsed && <span>Sync, Share & Backup</span>}
+          {!isCollapsed && <span className="truncate">{t('nav.syncBackup')}</span>}
         </button>
 
         {/* Settings */}
         <button
           type="button"
           onClick={() => onNavigate('settings')}
-          title="Settings"
+          title={t('nav.settings')}
           className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-xs font-medium transition-colors cursor-pointer ${
             currentView === 'settings'
               ? 'bg-rose-600/15 text-rose-400 font-semibold'
@@ -459,16 +521,78 @@ export const Sidebar: React.FC<SidebarProps> = ({
           }`}
         >
           <Settings className="w-4 h-4 shrink-0" />
-          {!isCollapsed && <span>Settings</span>}
+          {!isCollapsed && <span className="truncate">{t('nav.settings')}</span>}
         </button>
       </nav>
 
-      {/* Offline Status Badge */}
-      <div className="p-3 border-t border-[#222c3d] text-[11px] text-slate-400 flex items-center gap-2">
-        <span className="w-2 h-2 rounded-full bg-emerald-500 shrink-0" />
-        {!isCollapsed && (
-          <span className="truncate">IndexedDB Offline Ready</span>
+      {/* Multiple Firms Switcher + Offline Status Badge */}
+      <div className="border-t border-[#222c3d] relative">
+        {enableMultipleFirms && !isCollapsed && (
+          <div className="p-2.5 border-b border-[#222c3d]">
+            <button
+              type="button"
+              onClick={() => setFirmMenuOpen((prev) => !prev)}
+              className="w-full flex items-center justify-between gap-2 px-2.5 py-2 rounded-lg bg-[#1c2433] hover:bg-[#232d40] border border-[#2b374d] text-left cursor-pointer transition-colors"
+            >
+              <div className="min-w-0">
+                <div className="text-[9px] uppercase tracking-wider text-slate-400 font-semibold">Active Firm</div>
+                <div className="text-xs font-bold text-white truncate">
+                  {businessProfile?.businessName || 'Primary Firm'}
+                </div>
+              </div>
+              <ArrowLeftRight className="w-3.5 h-3.5 text-rose-400 shrink-0" />
+            </button>
+
+            {firmMenuOpen && (
+              <div className="absolute left-2.5 right-2.5 bottom-full mb-1.5 bg-[#1b2230] border border-[#2d394e] rounded-xl shadow-2xl p-1.5 z-50 space-y-1">
+                <div className="px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                  Switch Business Firm
+                </div>
+                <div className="max-h-40 overflow-y-auto space-y-0.5">
+                  {firmsList.map((f) => {
+                    const isCurrent = f.id === activeFirmId;
+                    return (
+                      <button
+                        key={f.id}
+                        type="button"
+                        onClick={() => {
+                          setFirmMenuOpen(false);
+                          if (!isCurrent && onSwitchFirm) onSwitchFirm(f.id);
+                        }}
+                        className={`w-full flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg text-xs text-left cursor-pointer transition-colors ${
+                          isCurrent ? 'bg-rose-600/20 text-rose-300 font-bold' : 'text-slate-300 hover:bg-white/5'
+                        }`}
+                      >
+                        <span className="truncate">{f.name}</span>
+                        {isCurrent && <Check className="w-3.5 h-3.5 text-rose-400 shrink-0" />}
+                      </button>
+                    );
+                  })}
+                </div>
+                {onOpenCreateFirm && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setFirmMenuOpen(false);
+                      onOpenCreateFirm();
+                    }}
+                    className="w-full flex items-center gap-1.5 px-2.5 py-1.5 mt-1 border-t border-[#2d394e] text-xs font-semibold text-emerald-400 hover:bg-white/5 rounded-lg cursor-pointer"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>Add New Firm</span>
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
         )}
+
+        <div className="p-3 text-[11px] text-slate-400 flex items-center gap-2">
+          <span className="w-2 h-2 rounded-full bg-emerald-500 shrink-0" />
+          {!isCollapsed && (
+            <span className="truncate">{t('app.offlineReady')}</span>
+          )}
+        </div>
       </div>
     </aside>
   );

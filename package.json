@@ -1,22 +1,29 @@
 {
   "name": "vyapar-gst-billing",
+  "description": "Offline-first GST billing and accounting desktop & web application for Indian small businesses.",
+  "author": "Amman Billing & Accounting",
   "private": true,
   "version": "1.0.0",
   "type": "module",
+  "main": "electron/main.cjs",
   "scripts": {
     "dev": "vite --port=3000 --host=0.0.0.0",
     "build": "vite build",
     "preview": "vite preview",
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit",
-    "electron:start": "electron electron/main.cjs",
-    "electron:build:win": "npm run build && electron-builder --win nsis",
-    "electron:build:portable": "npm run build && electron-builder --win portable"
+    "electron:start": "npx electron electron/main.cjs",
+    "electron:dev": "npx electron electron/main.cjs --dev",
+    "electron:build:win": "npm run build && npx electron-builder --win nsis",
+    "electron:build:portable": "npm run build && npx electron-builder --win portable",
+    "electron:build:all": "npm run build && npx electron-builder --win nsis portable"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.3.3",
+    "@types/qrcode": "^1.5.6",
     "@vitejs/plugin-react": "^6.1.1",
     "lucide-react": "^0.546.0",
+    "qrcode": "^1.5.4",
     "react": "^19.0.1",
     "react-dom": "^19.0.1",
     "vite": "^8.3.0"

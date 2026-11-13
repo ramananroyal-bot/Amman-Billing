@@ -12,24 +12,58 @@ import {
   IntegrityReport,
   Expense,
   ExpenseCategory,
+  OverdueInvoiceInfo,
+  AuditLogEntry,
+  FirmInfo,
 } from '../types';
+import { convertWeightQty } from '../utils/unitConversion';
+import {
+  getActiveDBName,
+  getActiveFirm,
+  getActiveFirmId,
+  setActiveFirmId,
+  registerNewFirmMeta,
+  updateFirmMeta,
+  applyDarkModeClass,
+} from '../utils/security';
 
-const DB_NAME = 'VyaparGST_DB';
-const DB_VERSION = 3;
+const DB_VERSION = 4;
 
 let dbPromise: Promise<IDBDatabase> | null = null;
+let openedDbName: string | null = null;
+
+export function resetDBConnection(): void {
+  if (dbPromise) {
+    dbPromise.then((db) => {
+      try {
+        db.close();
+      } catch {
+        // Ignore close error
+      }
+    }).catch(() => {});
+  }
+  dbPromise = null;
+  openedDbName = null;
+}
 
 export function getDB(): Promise<IDBDatabase> {
-  if (dbPromise) return dbPromise;
+  const targetDbName = getActiveDBName();
+  if (dbPromise && openedDbName === targetDbName) return dbPromise;
 
+  if (dbPromise && openedDbName !== targetDbName) {
+    resetDBConnection();
+  }
+
+  openedDbName = targetDbName;
   dbPromise = new Promise((resolve, reject) => {
     if (typeof indexedDB === 'undefined') {
       dbPromise = null;
+      openedDbName = null;
       reject(new Error('IndexedDB is not supported in this environment'));
       return;
     }
 
-    const request = indexedDB.open(DB_NAME, DB_VERSION);
+    const request = indexedDB.open(targetDbName, DB_VERSION);
 
     request.onblocked = () => {
       console.warn('IndexedDB open blocked: please close other tabs of this application.');
@@ -75,6 +109,11 @@ export function getDB(): Promise<IDBDatabase> {
       if (!db.objectStoreNames.contains('expense_categories')) {
         db.createObjectStore('expense_categories', { keyPath: 'id' });
       }
+      if (!db.objectStoreNames.contains('audit_logs')) {
+        const auditStore = db.createObjectStore('audit_logs', { keyPath: 'id' });
+        auditStore.createIndex('timestamp', 'timestamp', { unique: false });
+        auditStore.createIndex('action', 'action', { unique: false });
+      }
     };
 
     request.onsuccess = () => {
@@ -82,6 +121,7 @@ export function getDB(): Promise<IDBDatabase> {
       db.onversionchange = () => {
         db.close();
         dbPromise = null;
+        openedDbName = null;
         console.warn('IndexedDB database version changed elsewhere; closed connection.');
       };
       resolve(db);
@@ -89,6 +129,7 @@ export function getDB(): Promise<IDBDatabase> {
 
     request.onerror = () => {
       dbPromise = null;
+      openedDbName = null;
       reject(request.error || new Error('Failed to open IndexedDB'));
     };
   });
@@ -137,8 +178,26 @@ export async function saveBusinessProfile(data: Partial<BusinessProfile>): Promi
     signatoryText: data.signatoryText || existing?.signatoryText || 'Authorized Signatory',
     invoicePrefix: data.invoicePrefix || existing?.invoicePrefix || 'INV-',
     purchasePrefix: data.purchasePrefix || existing?.purchasePrefix || 'PUR-',
-    nextInvoiceNumber: data.nextInvoiceNumber || existing?.nextInvoiceNumber || 1,
-    nextPurchaseNumber: data.nextPurchaseNumber || existing?.nextPurchaseNumber || 1,
+    challanPrefix: data.challanPrefix || existing?.challanPrefix || 'CH-',
+    paymentInPrefix: data.paymentInPrefix || existing?.paymentInPrefix || 'REC-',
+    paymentOutPrefix: data.paymentOutPrefix || existing?.paymentOutPrefix || 'PAY-',
+    creditNotePrefix: data.creditNotePrefix || existing?.creditNotePrefix || 'CR-',
+    debitNotePrefix: data.debitNotePrefix || existing?.debitNotePrefix || 'DB-',
+    estimatePrefix: data.estimatePrefix || existing?.estimatePrefix || 'EST-',
+    expensePrefix: data.expensePrefix || existing?.expensePrefix || 'EXP-',
+    jobWorkOutPrefix: data.jobWorkOutPrefix || existing?.jobWorkOutPrefix || 'JWO-',
+    jobWorkInPrefix: data.jobWorkInPrefix || existing?.jobWorkInPrefix || 'JWI-',
+    nextInvoiceNumber: data.nextInvoiceNumber ?? existing?.nextInvoiceNumber ?? 1,
+    nextPurchaseNumber: data.nextPurchaseNumber ?? existing?.nextPurchaseNumber ?? 1,
+    nextChallanNumber: data.nextChallanNumber ?? existing?.nextChallanNumber ?? 1,
+    nextPaymentInNumber: data.nextPaymentInNumber ?? existing?.nextPaymentInNumber ?? 1,
+    nextPaymentOutNumber: data.nextPaymentOutNumber ?? existing?.nextPaymentOutNumber ?? 1,
+    nextCreditNoteNumber: data.nextCreditNoteNumber ?? existing?.nextCreditNoteNumber ?? 1,
+    nextDebitNoteNumber: data.nextDebitNoteNumber ?? existing?.nextDebitNoteNumber ?? 1,
+    nextEstimateNumber: data.nextEstimateNumber ?? existing?.nextEstimateNumber ?? 1,
+    nextExpenseNumber: data.nextExpenseNumber ?? existing?.nextExpenseNumber ?? 1,
+    nextJobWorkOutNumber: data.nextJobWorkOutNumber ?? existing?.nextJobWorkOutNumber ?? 1,
+    nextJobWorkInNumber: data.nextJobWorkInNumber ?? existing?.nextJobWorkInNumber ?? 1,
     createdAt: existing?.createdAt || now,
     updatedAt: now,
   };
@@ -147,7 +206,16 @@ export async function saveBusinessProfile(data: Partial<BusinessProfile>): Promi
     const tx = db.transaction('business_profile', 'readwrite');
     const store = tx.objectStore('business_profile');
     const request = store.put(profile);
-    request.onsuccess = () => resolve(profile);
+    request.onsuccess = () => {
+      // Keep multi-firm switcher display name & GSTIN synchronized with the active firm profile
+      if (profile.businessName) {
+        updateFirmMeta(getActiveFirmId(), {
+          name: profile.businessName,
+          gstin: profile.gstin || '',
+        });
+      }
+      resolve(profile);
+    };
     request.onerror = () => reject(request.error);
   });
 }
@@ -229,7 +297,16 @@ export async function saveParty(partyData: Partial<Party>): Promise<Party> {
     const tx = db.transaction('parties', 'readwrite');
     const store = tx.objectStore('parties');
     const request = store.put(party);
-    request.onsuccess = () => resolve(party);
+    request.onsuccess = () => {
+      recordAuditLogIfEnabled({
+        action: partyData.id ? 'EDIT' : 'CREATE',
+        entityType: 'party',
+        entityId: party.id,
+        entityLabel: party.name,
+        details: `${partyData.id ? 'Updated' : 'Created'} party (${party.group || 'Customer'})`,
+      });
+      resolve(party);
+    };
     request.onerror = () => reject(request.error);
   });
 }
@@ -261,6 +338,7 @@ export async function deleteParty(id: string | number): Promise<{ success: boole
     };
   }
 
+  const existingParty = await getParty(id);
   return new Promise((resolve, reject) => {
     const tx = db.transaction('parties', 'readwrite');
     const store = tx.objectStore('parties');
@@ -268,7 +346,16 @@ export async function deleteParty(id: string | number): Promise<{ success: boole
     if (typeof id === 'string' && !isNaN(Number(id))) {
       store.delete(Number(id));
     }
-    tx.oncomplete = () => resolve({ success: true });
+    tx.oncomplete = () => {
+      recordAuditLogIfEnabled({
+        action: 'DELETE',
+        entityType: 'party',
+        entityId: idStr,
+        entityLabel: existingParty?.name || idStr,
+        details: `Deleted party ${existingParty?.name || idStr}`,
+      });
+      resolve({ success: true });
+    };
     tx.onerror = () => reject(tx.error);
   });
 }
@@ -317,7 +404,7 @@ export async function getItem(id: string | number): Promise<Item | null> {
   });
 }
 
-export async function saveItem(itemData: Partial<Item>): Promise<Item> {
+export async function saveItem(itemData: Partial<Item>, skipAudit: boolean = false): Promise<Item> {
   const db = await getDB();
   const id = itemData.id || `item_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
   const now = new Date().toISOString();
@@ -334,6 +421,7 @@ export async function saveItem(itemData: Partial<Item>): Promise<Item> {
     unit: (itemData.unit || 'PCS').toUpperCase(),
     category: itemData.category || 'General',
     itemCode: itemData.itemCode || '',
+    barcode: (itemData.barcode || '').trim(),
     taxRate: Number(itemData.taxRate) || 0,
     salePrice: Number(itemData.salePrice) || 0,
     salePriceTaxType: itemData.salePriceTaxType || 'without_tax',
@@ -349,6 +437,7 @@ export async function saveItem(itemData: Partial<Item>): Promise<Item> {
     stockValue: Math.round(currentStock * purchasePrice * 100) / 100,
     manufacturer: itemData.manufacturer || '',
     batchNumber: itemData.batchNumber || '',
+    serialNumber: (itemData.serialNumber || '').trim(),
     expiryDate: itemData.expiryDate || '',
     createdAt: itemData.createdAt || now,
     updatedAt: now,
@@ -358,7 +447,18 @@ export async function saveItem(itemData: Partial<Item>): Promise<Item> {
     const tx = db.transaction('items', 'readwrite');
     const store = tx.objectStore('items');
     const request = store.put(item);
-    request.onsuccess = () => resolve(item);
+    request.onsuccess = () => {
+      if (!skipAudit) {
+        recordAuditLogIfEnabled({
+          action: itemData.id ? 'EDIT' : 'CREATE',
+          entityType: 'item',
+          entityId: item.id,
+          entityLabel: item.name,
+          details: `${itemData.id ? 'Updated' : 'Created'} item (${item.unit}) · Sale ₹${item.salePrice}`,
+        });
+      }
+      resolve(item);
+    };
     request.onerror = () => reject(request.error);
   });
 }
@@ -430,6 +530,7 @@ export async function deleteItem(id: string | number): Promise<{ success: boolea
     };
   }
 
+  const existingItem = await getItem(id);
   const db = await getDB();
   return new Promise((resolve, reject) => {
     const tx = db.transaction('items', 'readwrite');
@@ -438,7 +539,16 @@ export async function deleteItem(id: string | number): Promise<{ success: boolea
     if (typeof id === 'string' && !isNaN(Number(id))) {
       store.delete(Number(id));
     }
-    tx.oncomplete = () => resolve({ success: true });
+    tx.oncomplete = () => {
+      recordAuditLogIfEnabled({
+        action: 'DELETE',
+        entityType: 'item',
+        entityId: idStr,
+        entityLabel: existingItem?.name || idStr,
+        details: `Deleted item ${existingItem?.name || idStr}`,
+      });
+      resolve({ success: true });
+    };
     tx.onerror = () => reject(tx.error);
   });
 }
@@ -571,6 +681,9 @@ export async function saveTransaction(txData: Partial<Transaction>): Promise<Tra
     documentUrl: txData.documentUrl || '',
     challanStatus: txData.challanStatus || (txData.type === 'delivery_challan' ? 'open' : undefined),
     linkedChallanId: txData.linkedChallanId || '',
+    jobWorkStatus: txData.jobWorkStatus || (txData.type === 'job_work_out' ? 'sent' : undefined),
+    linkedJobWorkId: txData.linkedJobWorkId || '',
+    processType: txData.processType || '',
     estimateStatus: txData.estimateStatus || (txData.type === 'estimate' ? 'open' : undefined),
     referenceNo: txData.referenceNo || '',
     receiptNo: txData.receiptNo || '',
@@ -584,23 +697,24 @@ export async function saveTransaction(txData: Partial<Transaction>): Promise<Tra
     updatedAt: now,
   };
 
-  // Adjust stock for products
+  // Adjust stock for products (converting line weight unit into item base unit when applicable)
   // 1. Revert old stock if old transaction was active
   if (oldTx && oldTx.status === 'active') {
     for (const itemRow of oldTx.items) {
       if (itemRow.itemId) {
         const itemRecord = await getItem(itemRow.itemId);
         if (itemRecord && itemRecord.type === 'product') {
-          const qtyDiff = (itemRow.qty || 0) + (itemRow.freeQty || 0);
-          if (oldTx.type === 'sale_invoice' || oldTx.type === 'purchase_return') {
+          const rawQty = (itemRow.qty || 0) + (itemRow.freeQty || 0);
+          const qtyDiff = convertWeightQty(rawQty, itemRow.unit, itemRecord.unit);
+          if (oldTx.type === 'sale_invoice' || oldTx.type === 'purchase_return' || oldTx.type === 'job_work_out') {
             // Revert deduction: add back
-            itemRecord.currentStock += qtyDiff;
-          } else if (oldTx.type === 'purchase_bill' || oldTx.type === 'sale_return') {
+            itemRecord.currentStock = Math.round((itemRecord.currentStock + qtyDiff) * 10000) / 10000;
+          } else if (oldTx.type === 'purchase_bill' || oldTx.type === 'sale_return' || oldTx.type === 'job_work_in') {
             // Revert addition: subtract back
-            itemRecord.currentStock = Math.max(0, itemRecord.currentStock - qtyDiff);
+            itemRecord.currentStock = Math.max(0, Math.round((itemRecord.currentStock - qtyDiff) * 10000) / 10000);
           }
           itemRecord.stockValue = Math.round(itemRecord.currentStock * itemRecord.purchasePrice * 100) / 100;
-          await saveItem(itemRecord);
+          await saveItem(itemRecord, true);
         }
       }
     }
@@ -631,17 +745,34 @@ export async function saveTransaction(txData: Partial<Transaction>): Promise<Tra
       if (itemRow.itemId) {
         const itemRecord = await getItem(itemRow.itemId);
         if (itemRecord && itemRecord.type === 'product') {
-          const qtyDiff = (itemRow.qty || 0) + (itemRow.freeQty || 0);
-          if (tx.type === 'sale_invoice' || tx.type === 'purchase_return') {
-            // Sale or Purchase Return reduces stock
-            itemRecord.currentStock = Math.max(0, itemRecord.currentStock - qtyDiff);
-          } else if (tx.type === 'purchase_bill' || tx.type === 'sale_return') {
-            // Purchase Bill or Sale Return increases stock
-            itemRecord.currentStock += qtyDiff;
+          const rawQty = (itemRow.qty || 0) + (itemRow.freeQty || 0);
+          const qtyDiff = convertWeightQty(rawQty, itemRow.unit, itemRecord.unit);
+          if (tx.type === 'sale_invoice' || tx.type === 'purchase_return' || tx.type === 'job_work_out') {
+            // Sale, Purchase Return, or Job Work Out reduces stock
+            itemRecord.currentStock = Math.max(0, Math.round((itemRecord.currentStock - qtyDiff) * 10000) / 10000);
+          } else if (tx.type === 'purchase_bill' || tx.type === 'sale_return' || tx.type === 'job_work_in') {
+            // Purchase Bill, Sale Return, or Job Work In increases stock
+            itemRecord.currentStock = Math.round((itemRecord.currentStock + qtyDiff) * 10000) / 10000;
           }
           itemRecord.stockValue = Math.round(itemRecord.currentStock * itemRecord.purchasePrice * 100) / 100;
-          await saveItem(itemRecord);
+          await saveItem(itemRecord, true);
         }
+      }
+    }
+
+    // If Job Work In is linked to a Job Work Out challan, mark the outward challan as completed
+    if (tx.type === 'job_work_in' && tx.linkedJobWorkId) {
+      const parentJobOut = await getTransaction(tx.linkedJobWorkId);
+      if (parentJobOut && parentJobOut.type === 'job_work_out') {
+        parentJobOut.jobWorkStatus = 'completed';
+        parentJobOut.updatedAt = new Date().toISOString();
+        const writeDb = await getDB();
+        await new Promise<void>((res, rej) => {
+          const wTx = writeDb.transaction('transactions', 'readwrite');
+          wTx.objectStore('transactions').put(parentJobOut);
+          wTx.oncomplete = () => res();
+          wTx.onerror = () => rej(wTx.error);
+        });
       }
     }
 
@@ -706,6 +837,12 @@ export async function saveTransaction(txData: Partial<Transaction>): Promise<Tra
         } else if (tx.type === 'estimate' && num >= (profile.nextEstimateNumber || 1)) {
           profile.nextEstimateNumber = num + 1;
           changed = true;
+        } else if (tx.type === 'job_work_out' && num >= (profile.nextJobWorkOutNumber || 1)) {
+          profile.nextJobWorkOutNumber = num + 1;
+          changed = true;
+        } else if (tx.type === 'job_work_in' && num >= (profile.nextJobWorkInNumber || 1)) {
+          profile.nextJobWorkInNumber = num + 1;
+          changed = true;
         }
         if (changed) {
           await saveBusinessProfile(profile);
@@ -713,6 +850,14 @@ export async function saveTransaction(txData: Partial<Transaction>): Promise<Tra
       }
     }
   }
+
+  recordAuditLogIfEnabled({
+    action: oldTx ? 'EDIT' : 'CREATE',
+    entityType: 'transaction',
+    entityId: tx.id,
+    entityLabel: tx.invoiceNo,
+    details: `${oldTx ? 'Edited' : 'Created'} ${tx.type.replace(/_/g, ' ')} for ${tx.partyName} · ₹${tx.totalAmount.toFixed(2)}`,
+  });
 
   return tx;
 }
@@ -788,23 +933,150 @@ export async function bulkConvertChallansToSale(challanIds: string[]): Promise<T
   return converted;
 }
 
+/**
+ * Converts an Estimate / Quotation into a confirmed Sale Invoice in one click.
+ * Marks the estimate as 'converted' without duplicating stock/balance impacts prior to conversion.
+ */
+export async function convertEstimateToSale(estimateId: string): Promise<Transaction> {
+  const estimate = await getTransaction(estimateId);
+  if (!estimate) throw new Error('Estimate / Quotation not found');
+  if (estimate.estimateStatus === 'converted') {
+    throw new Error('This estimate has already been converted to a sale invoice');
+  }
+
+  // Mark estimate as converted
+  estimate.estimateStatus = 'converted';
+  estimate.updatedAt = new Date().toISOString();
+  const db = await getDB();
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction('transactions', 'readwrite');
+    const store = tx.objectStore('transactions');
+    const req = store.put(estimate);
+    req.onsuccess = () => resolve();
+    req.onerror = () => reject(req.error);
+  });
+
+  const profile = await getBusinessProfile();
+  const nextNum = profile?.nextInvoiceNumber || 1;
+  const prefix = profile?.invoicePrefix || 'INV-';
+  const newInvoiceNo = `${prefix}${String(nextNum).padStart(4, '0')}`;
+
+  // Create sale invoice from estimate (automatically deducts stock and adds party balance)
+  const saleTx = await saveTransaction({
+    type: 'sale_invoice',
+    invoiceNo: newInvoiceNo,
+    date: new Date().toISOString().split('T')[0],
+    partyId: estimate.partyId,
+    partyName: estimate.partyName,
+    partyGstin: estimate.partyGstin,
+    partyPhone: estimate.partyPhone,
+    partyState: estimate.partyState,
+    partyStateCode: estimate.partyStateCode,
+    billingAddress: estimate.billingAddress,
+    shippingAddress: estimate.shippingAddress,
+    stateOfSupply: estimate.stateOfSupply,
+    paymentType: estimate.paymentType || 'credit',
+    items: estimate.items,
+    subtotal: estimate.subtotal,
+    cgst: estimate.cgst,
+    sgst: estimate.sgst,
+    igst: estimate.igst,
+    totalTax: estimate.totalTax,
+    roundOff: estimate.roundOff,
+    totalAmount: estimate.totalAmount,
+    receivedAmount: 0,
+    balanceDue: estimate.totalAmount,
+    description: `Converted from Estimate ${estimate.invoiceNo}. ${estimate.description || ''}`.trim(),
+    terms: estimate.terms,
+    godown: estimate.godown,
+    status: 'active',
+  });
+
+  return saleTx;
+}
+
+/**
+ * Receives processed goods back from a Job Work Out challan by generating a linked Job Work In challan.
+ * Restores processed stock quantities into inventory and marks the outward job work challan completed.
+ */
+export async function convertJobWorkOutToIn(
+  jobWorkOutId: string,
+  processingCharge: number = 0,
+  notes?: string
+): Promise<Transaction> {
+  const jobOut = await getTransaction(jobWorkOutId);
+  if (!jobOut || jobOut.type !== 'job_work_out') {
+    throw new Error('Job Work Out challan not found');
+  }
+  if (jobOut.jobWorkStatus === 'completed') {
+    throw new Error('Goods for this Job Work Out challan have already been received back');
+  }
+
+  const profile = await getBusinessProfile();
+  const nextNum = profile?.nextJobWorkInNumber || 1;
+  const prefix = profile?.jobWorkInPrefix || 'JWI-';
+  const newNo = `${prefix}${String(nextNum).padStart(4, '0')}`;
+
+  const jobIn = await saveTransaction({
+    type: 'job_work_in',
+    invoiceNo: newNo,
+    date: new Date().toISOString().split('T')[0],
+    partyId: jobOut.partyId,
+    partyName: jobOut.partyName,
+    partyGstin: jobOut.partyGstin,
+    partyPhone: jobOut.partyPhone,
+    partyState: jobOut.partyState,
+    partyStateCode: jobOut.partyStateCode,
+    billingAddress: jobOut.billingAddress,
+    shippingAddress: jobOut.shippingAddress,
+    stateOfSupply: jobOut.stateOfSupply,
+    paymentType: 'cash',
+    items: jobOut.items,
+    subtotal: processingCharge > 0 ? processingCharge : jobOut.subtotal,
+    cgst: 0,
+    sgst: 0,
+    igst: 0,
+    totalTax: 0,
+    roundOff: 0,
+    totalAmount: processingCharge > 0 ? processingCharge : jobOut.totalAmount,
+    receivedAmount: 0,
+    balanceDue: 0,
+    processType: jobOut.processType || 'Job Work Processing',
+    linkedJobWorkId: jobOut.id,
+    description: notes || `Received back against Job Work Out ${jobOut.invoiceNo}`,
+    godown: jobOut.godown,
+    status: 'active',
+  });
+
+  recordAuditLogIfEnabled({
+    action: 'CONVERT',
+    entityType: 'transaction',
+    entityId: jobIn.id,
+    entityLabel: `${jobOut.invoiceNo} -> ${jobIn.invoiceNo}`,
+    details: `Received Job Work In ${jobIn.invoiceNo} against ${jobOut.invoiceNo}`,
+  });
+
+  return jobIn;
+}
+
 export async function cancelTransaction(id: string): Promise<Transaction | null> {
   const tx = await getTransaction(id);
   if (!tx || tx.status === 'cancelled') return tx;
 
-  // Revert stock
+  // Revert stock (accounting for weight conversions)
   for (const itemRow of tx.items) {
     if (itemRow.itemId) {
       const itemRecord = await getItem(itemRow.itemId);
       if (itemRecord && itemRecord.type === 'product') {
-        const qtyDiff = (itemRow.qty || 0) + (itemRow.freeQty || 0);
-        if (tx.type === 'sale_invoice') {
-          itemRecord.currentStock += qtyDiff;
-        } else if (tx.type === 'purchase_bill') {
-          itemRecord.currentStock -= qtyDiff;
+        const rawQty = (itemRow.qty || 0) + (itemRow.freeQty || 0);
+        const qtyDiff = convertWeightQty(rawQty, itemRow.unit, itemRecord.unit);
+        if (tx.type === 'sale_invoice' || tx.type === 'job_work_out') {
+          itemRecord.currentStock = Math.round((itemRecord.currentStock + qtyDiff) * 10000) / 10000;
+        } else if (tx.type === 'purchase_bill' || tx.type === 'job_work_in') {
+          itemRecord.currentStock = Math.max(0, Math.round((itemRecord.currentStock - qtyDiff) * 10000) / 10000);
         }
         itemRecord.stockValue = Math.round(itemRecord.currentStock * itemRecord.purchasePrice * 100) / 100;
-        await saveItem(itemRecord);
+        await saveItem(itemRecord, true);
       }
     }
   }
@@ -819,6 +1091,14 @@ export async function cancelTransaction(id: string): Promise<Transaction | null>
     const request = store.put(tx);
     request.onsuccess = () => resolve();
     request.onerror = () => reject(request.error);
+  });
+
+  recordAuditLogIfEnabled({
+    action: 'CANCEL',
+    entityType: 'transaction',
+    entityId: tx.id,
+    entityLabel: tx.invoiceNo,
+    details: `Cancelled ${tx.type.replace(/_/g, ' ')} ${tx.invoiceNo}`,
   });
 
   return tx;
@@ -849,6 +1129,13 @@ export async function deleteTransaction(id: string | number): Promise<{ success:
     const partyStore = idbTx.objectStore('parties');
 
     idbTx.oncomplete = () => {
+      recordAuditLogIfEnabled({
+        action: 'DELETE',
+        entityType: 'transaction',
+        entityId: tx.id,
+        entityLabel: tx.invoiceNo,
+        details: `Deleted ${tx.type.replace(/_/g, ' ')} ${tx.invoiceNo} (${tx.partyName}) · ₹${tx.totalAmount.toFixed(2)}`,
+      });
       resolve({ success: true });
     };
 
@@ -862,20 +1149,21 @@ export async function deleteTransaction(id: string | number): Promise<{ success:
 
     // If transaction was active (not cancelled), reverse inventory and balance
     if (tx.status === 'active') {
-      // 1. Stock reversal
+      // 1. Stock reversal (accounting for weight unit conversions)
       for (const itemRow of tx.items) {
         if (itemRow.itemId) {
           const itemReq = itemStore.get(itemRow.itemId);
           itemReq.onsuccess = () => {
             const itemRecord = itemReq.result;
             if (itemRecord && itemRecord.type === 'product') {
-              const qtyDiff = (itemRow.qty || 0) + (itemRow.freeQty || 0);
-              if (tx.type === 'sale_invoice' || tx.type === 'purchase_return') {
-                // Sale or Purchase Return deletion: add back to stock
-                itemRecord.currentStock += qtyDiff;
-              } else if (tx.type === 'purchase_bill' || tx.type === 'sale_return') {
-                // Purchase or Sale Return deletion: deduct from stock
-                itemRecord.currentStock = Math.max(0, itemRecord.currentStock - qtyDiff);
+              const rawQty = (itemRow.qty || 0) + (itemRow.freeQty || 0);
+              const qtyDiff = convertWeightQty(rawQty, itemRow.unit, itemRecord.unit);
+              if (tx.type === 'sale_invoice' || tx.type === 'purchase_return' || tx.type === 'job_work_out') {
+                // Sale, Purchase Return, or Job Work Out deletion: add back to stock
+                itemRecord.currentStock = Math.round((itemRecord.currentStock + qtyDiff) * 10000) / 10000;
+              } else if (tx.type === 'purchase_bill' || tx.type === 'sale_return' || tx.type === 'job_work_in') {
+                // Purchase, Sale Return, or Job Work In deletion: deduct from stock
+                itemRecord.currentStock = Math.max(0, Math.round((itemRecord.currentStock - qtyDiff) * 10000) / 10000);
               }
               itemRecord.stockValue = Math.round(itemRecord.currentStock * itemRecord.purchasePrice * 100) / 100;
               itemRecord.updatedAt = new Date().toISOString();
@@ -1106,7 +1394,9 @@ export async function convertBillToReturn(
 export async function getDashboardMetrics(period: FilterPeriod = 'this_month'): Promise<DashboardMetrics> {
   const transactions = await getTransactions();
   const parties = await getParties();
+  const allItems = await getItems();
   const allExpenses = await getExpenses();
+  const settings = await getAppSettings();
 
   const now = new Date();
   const currentYear = now.getFullYear();
@@ -1221,6 +1511,49 @@ export async function getDashboardMetrics(period: FilterPeriod = 'this_month'): 
       });
     });
 
+  // Calculate overdue unpaid sale invoices based on dueDate (or date + defaultDueDays) + overdueReminderDays
+  const todayMidnight = new Date();
+  todayMidnight.setHours(0, 0, 0, 0);
+  const graceDays = Number(settings.overdueReminderDays) || 0;
+  const fallbackDueDays = Number(settings.defaultDueDays) || 30;
+  const partyPhoneMap = new Map(parties.map((p) => [p.id, p.phone || '']));
+
+  const overduePayments: OverdueInvoiceInfo[] = [];
+  for (const t of transactions) {
+    if (t.status === 'active' && t.type === 'sale_invoice' && (t.balanceDue || 0) > 0) {
+      let dueStr = t.dueDate;
+      if (!dueStr && t.date) {
+        const d = new Date(t.date);
+        d.setDate(d.getDate() + fallbackDueDays);
+        dueStr = d.toISOString().split('T')[0];
+      }
+      if (dueStr) {
+        const dueDt = new Date(dueStr);
+        dueDt.setHours(0, 0, 0, 0);
+        const diffDays = Math.floor((todayMidnight.getTime() - dueDt.getTime()) / (1000 * 60 * 60 * 24));
+        if (diffDays > graceDays) {
+          overduePayments.push({
+            transactionId: t.id,
+            invoiceNo: t.invoiceNo,
+            partyId: t.partyId,
+            partyName: t.partyName,
+            partyPhone: t.partyPhone || partyPhoneMap.get(t.partyId) || '',
+            dueDate: dueStr,
+            daysOverdue: diffDays,
+            balanceDue: t.balanceDue,
+            totalAmount: t.totalAmount,
+          });
+        }
+      }
+    }
+  }
+  overduePayments.sort((a, b) => b.daysOverdue - a.daysOverdue);
+
+  // Low stock items (product items where currentStock <= minStockAlert)
+  const lowStockItems = allItems
+    .filter((i) => i.type === 'product' && (i.minStockAlert > 0 ? i.currentStock <= i.minStockAlert : i.currentStock <= 0))
+    .sort((a, b) => a.currentStock - b.currentStock);
+
   return {
     totalReceivable: Math.round(totalReceivable * 100) / 100,
     totalPayable: Math.round(totalPayable * 100) / 100,
@@ -1234,6 +1567,8 @@ export async function getDashboardMetrics(period: FilterPeriod = 'this_month'): 
     period,
     salesByDay,
     recentTransactions: transactions.slice(0, 10),
+    overduePayments,
+    lowStockItems,
   };
 }
 
@@ -1249,6 +1584,8 @@ export async function getAppSettings(): Promise<AppSettings> {
     const request = store.get('current');
     const defaultSettings: AppSettings = {
       id: 'current',
+      language: 'en',
+      invoicePrintLanguage: 'en',
       decimalPlaces: 2,
       currencySymbol: '₹',
       dateFormat: 'DD/MM/YYYY',
@@ -1259,6 +1596,7 @@ export async function getAppSettings(): Promise<AppSettings> {
       autoRoundOff: true,
       defaultPaymentMode: 'cash',
       defaultDueDays: 30,
+      overdueReminderDays: 0,
       enableCreditLimitAlerts: true,
       enableBatchExpiry: false,
       enableWholesalePrice: false,
@@ -1279,7 +1617,17 @@ export async function getAppSettings(): Promise<AppSettings> {
       eWayBillThreshold: 50000,
       autoBackupPrompt: true,
       whatsappMessageTemplate:
-        'Dear Customer, your invoice [Invoice_Number] of [Invoice_Amount] dated [Invoice_Date] from [Firm_Name] is generated. Balance due: [Balance_Due]. Thank you for your business!',
+        'Dear [Party_Name], gentle reminder from [Firm_Name]: Invoice [Invoice_Number] (Balance: [Transaction_Balance]) was due on [Due_Date]. Please arrange payment. Thank you!',
+      enableMultipleFirms: false,
+      enablePasscodeLock: false,
+      requirePinForEditDelete: false,
+      enableAuditTrail: false,
+      enableBarcode: false,
+      enableBatchSerial: false,
+      darkMode: false,
+      enableExtendedShortcuts: true,
+      enableWeightUnits: false,
+      enableJobWork: false,
       updatedAt: new Date().toISOString(),
     };
 
@@ -1305,17 +1653,33 @@ export async function saveAppSettings(settings: Partial<AppSettings>): Promise<A
     updatedAt: new Date().toISOString(),
   };
 
+  if (settings.darkMode !== undefined) {
+    applyDarkModeClass(Boolean(settings.darkMode));
+  }
+
   return new Promise((resolve, reject) => {
     const tx = db.transaction('settings', 'readwrite');
     const store = tx.objectStore('settings');
     const request = store.put(updated);
-    request.onsuccess = () => resolve(updated);
+    request.onsuccess = () => {
+      const changedKeys = Object.keys(settings).join(', ');
+      recordAuditLogIfEnabled(
+        {
+          action: 'SETTINGS',
+          entityType: 'settings',
+          entityLabel: 'App Settings',
+          details: `Updated settings: ${changedKeys}`,
+        },
+        updated.enableAuditTrail
+      );
+      resolve(updated);
+    };
     request.onerror = () => reject(request.error);
   });
 }
 
 // -------------------------------------------------------------
-// BACKUP, RESTORE & DATA SYNCHRONIZATION
+// BACKUP, RESTORE & DATA SYNCHRONIZATION (v4.0)
 // -------------------------------------------------------------
 
 export async function exportBackupJSON(): Promise<string> {
@@ -1327,6 +1691,7 @@ export async function exportBackupJSON(): Promise<string> {
   const stockAdjustments = await getStockAdjustments();
   const expenses = await getExpenses();
   const expenseCategories = await getExpenseCategories();
+  const auditLogs = await getAuditLogs();
 
   const totalSales = transactions
     .filter((t) => t.type === 'sale_invoice' && t.status === 'active')
@@ -1334,8 +1699,9 @@ export async function exportBackupJSON(): Promise<string> {
 
   const backupData = {
     app: 'VyaparGST',
-    version: '3.0',
+    version: '4.0',
     exportedAt: new Date().toISOString(),
+    firm: getActiveFirm(),
     profile,
     parties,
     items,
@@ -1343,6 +1709,7 @@ export async function exportBackupJSON(): Promise<string> {
     stockAdjustments,
     expenses,
     expenseCategories,
+    auditLogs,
     settings,
     stats: {
       partiesCount: parties.length,
@@ -1350,6 +1717,7 @@ export async function exportBackupJSON(): Promise<string> {
       transactionsCount: transactions.length,
       stockAdjustmentsCount: stockAdjustments.length,
       expensesCount: expenses.length,
+      auditLogsCount: auditLogs.length,
       totalSalesAmount: Math.round(totalSales * 100) / 100,
     },
   };
@@ -1533,7 +1901,7 @@ export async function importBackupJSON(
     if (mode === 'clean') {
       await new Promise<void>((resolve, reject) => {
         const tx = db.transaction(
-          ['business_profile', 'parties', 'items', 'transactions', 'stock_adjustments', 'expenses', 'expense_categories'],
+          ['business_profile', 'parties', 'items', 'transactions', 'stock_adjustments', 'expenses', 'expense_categories', 'audit_logs'],
           'readwrite'
         );
         tx.objectStore('business_profile').clear();
@@ -1543,6 +1911,7 @@ export async function importBackupJSON(
         tx.objectStore('stock_adjustments').clear();
         tx.objectStore('expenses').clear();
         tx.objectStore('expense_categories').clear();
+        tx.objectStore('audit_logs').clear();
         tx.oncomplete = () => resolve();
         tx.onerror = () => reject(tx.error);
       });
@@ -1582,10 +1951,22 @@ export async function importBackupJSON(
       const store = tx.objectStore('expense_categories');
       for (const cat of data.expenseCategories) store.put(cat);
     }
+    if (Array.isArray(data.auditLogs)) {
+      const tx = db.transaction('audit_logs', 'readwrite');
+      const store = tx.objectStore('audit_logs');
+      for (const log of data.auditLogs) store.put(log);
+    }
     if (data.settings) {
       const tx = db.transaction('settings', 'readwrite');
       tx.objectStore('settings').put(data.settings);
     }
+
+    recordAuditLogIfEnabled({
+      action: 'BACKUP_RESTORE',
+      entityType: 'system',
+      entityLabel: `Backup ${mode === 'clean' ? 'Clean Restore' : 'Merge'}`,
+      details: `Restored backup (${data.transactions?.length || 0} transactions, ${data.parties?.length || 0} parties)`,
+    });
 
     return {
       success: true,
@@ -1682,10 +2063,11 @@ export async function reconcileDatabase(): Promise<{ partiesUpdated: number; ite
     for (const t of transactions) {
       for (const line of t.items || []) {
         if (String(line.itemId) === String(item.id)) {
-          const qty = (Number(line.qty) || 0) + (Number(line.freeQty) || 0);
-          if (t.type === 'sale_invoice' || t.type === 'delivery_challan') {
+          const rawQty = (Number(line.qty) || 0) + (Number(line.freeQty) || 0);
+          const qty = convertWeightQty(rawQty, line.unit, item.unit);
+          if (t.type === 'sale_invoice' || t.type === 'purchase_return' || t.type === 'job_work_out') {
             stock -= qty;
-          } else if (t.type === 'purchase_bill' || t.type === 'sale_return') {
+          } else if (t.type === 'purchase_bill' || t.type === 'sale_return' || t.type === 'job_work_in') {
             stock += qty;
           }
         }
@@ -1699,10 +2081,10 @@ export async function reconcileDatabase(): Promise<{ partiesUpdated: number; ite
       }
     }
 
-    const roundedStock = Math.round(stock * 100) / 100;
+    const roundedStock = Math.round(stock * 10000) / 10000;
     const existing = await getItem(item.id);
     if (existing) {
-      await saveItem({ ...existing, currentStock: roundedStock });
+      await saveItem({ ...existing, currentStock: roundedStock }, true);
       itemsUpdated++;
     }
   }
@@ -1743,7 +2125,7 @@ export async function factoryResetDatabase(): Promise<void> {
   const db = await getDB();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(
-      ['business_profile', 'parties', 'items', 'transactions', 'settings', 'stock_adjustments'],
+      ['business_profile', 'parties', 'items', 'transactions', 'settings', 'stock_adjustments', 'expenses', 'expense_categories', 'audit_logs'],
       'readwrite'
     );
     tx.objectStore('business_profile').clear();
@@ -1752,6 +2134,9 @@ export async function factoryResetDatabase(): Promise<void> {
     tx.objectStore('transactions').clear();
     tx.objectStore('settings').clear();
     tx.objectStore('stock_adjustments').clear();
+    tx.objectStore('expenses').clear();
+    tx.objectStore('expense_categories').clear();
+    tx.objectStore('audit_logs').clear();
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
   });
@@ -2056,19 +2441,148 @@ export async function saveExpense(data: Partial<Expense>): Promise<Expense> {
     const tx = db.transaction('expenses', 'readwrite');
     const store = tx.objectStore('expenses');
     const req = store.put(expense);
-    req.onsuccess = () => resolve(expense);
+    req.onsuccess = () => {
+      recordAuditLogIfEnabled({
+        action: data.id ? 'EDIT' : 'CREATE',
+        entityType: 'expense',
+        entityId: expense.id,
+        entityLabel: expense.expenseNo,
+        details: `${data.id ? 'Edited' : 'Added'} expense ${expense.category} · ₹${expense.amount.toFixed(2)}`,
+      });
+      resolve(expense);
+    };
     req.onerror = () => reject(req.error);
   });
 }
 
 export async function deleteExpense(id: string): Promise<void> {
+  const existing = await getExpense(id);
   const db = await getDB();
   return new Promise((resolve, reject) => {
     const tx = db.transaction('expenses', 'readwrite');
     const store = tx.objectStore('expenses');
     const req = store.delete(id);
+    req.onsuccess = () => {
+      recordAuditLogIfEnabled({
+        action: 'DELETE',
+        entityType: 'expense',
+        entityId: id,
+        entityLabel: existing?.expenseNo || id,
+        details: `Deleted expense ${existing?.category || ''} ${existing?.expenseNo || id}`,
+      });
+      resolve();
+    };
+    req.onerror = () => reject(req.error);
+  });
+}
+
+// -------------------------------------------------------------
+// AUDIT TRAIL LOGGING (v4 store: audit_logs)
+// -------------------------------------------------------------
+
+export async function getAuditLogs(): Promise<AuditLogEntry[]> {
+  try {
+    const db = await getDB();
+    return new Promise((resolve) => {
+      const tx = db.transaction('audit_logs', 'readonly');
+      const store = tx.objectStore('audit_logs');
+      const req = store.getAll();
+      req.onsuccess = () => {
+        const list: AuditLogEntry[] = req.result || [];
+        list.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+        resolve(list);
+      };
+      req.onerror = () => resolve([]);
+    });
+  } catch {
+    return [];
+  }
+}
+
+export async function addAuditLog(entry: Omit<AuditLogEntry, 'id' | 'timestamp'>): Promise<void> {
+  try {
+    const db = await getDB();
+    const record: AuditLogEntry = {
+      id: `audit_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+      timestamp: new Date().toISOString(),
+      ...entry,
+    };
+    await new Promise<void>((resolve) => {
+      const tx = db.transaction('audit_logs', 'readwrite');
+      tx.objectStore('audit_logs').put(record);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => resolve();
+    });
+  } catch {
+    // Audit logging should never break core business workflows
+  }
+}
+
+export async function clearAuditLogs(): Promise<void> {
+  const db = await getDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('audit_logs', 'readwrite');
+    const req = tx.objectStore('audit_logs').clear();
     req.onsuccess = () => resolve();
     req.onerror = () => reject(req.error);
   });
+}
+
+function recordAuditLogIfEnabled(
+  entry: Omit<AuditLogEntry, 'id' | 'timestamp' | 'actor'>,
+  explicitEnabled?: boolean
+): void {
+  const activeFirm = getActiveFirm();
+  const actor = activeFirm?.name || 'Owner';
+  if (explicitEnabled === false) return;
+  if (explicitEnabled === true) {
+    void addAuditLog({ ...entry, actor });
+    return;
+  }
+  getAppSettings()
+    .then((s) => {
+      if (s.enableAuditTrail) {
+        void addAuditLog({ ...entry, actor });
+      }
+    })
+    .catch(() => {});
+}
+
+// -------------------------------------------------------------
+// MULTI-FIRM DATABASE SWITCHING
+// -------------------------------------------------------------
+
+export async function switchActiveFirmDB(firmId: string): Promise<void> {
+  resetDBConnection();
+  setActiveFirmId(firmId);
+  await getDB();
+}
+
+export async function createNewFirmDB(input: {
+  businessName: string;
+  gstin?: string;
+  state: string;
+  stateCode: string;
+  phone?: string;
+  address?: string;
+}): Promise<{ firm: FirmInfo; profile: BusinessProfile }> {
+  const currentSettings = await getAppSettings().catch(() => null);
+  const firm = registerNewFirmMeta(input.businessName, input.gstin);
+  resetDBConnection();
+  setActiveFirmId(firm.id);
+  const profile = await saveBusinessProfile({
+    businessName: input.businessName.trim(),
+    gstin: (input.gstin || '').trim().toUpperCase(),
+    state: input.state,
+    stateCode: input.stateCode,
+    phone: input.phone || '',
+    address: input.address || '',
+  });
+  await saveAppSettings({
+    enableMultipleFirms: true,
+    darkMode: currentSettings?.darkMode || false,
+    language: currentSettings?.language || 'en',
+  });
+  return { firm, profile };
 }
 

@@ -3,11 +3,20 @@ import App from './App.tsx';
 import './index.css';
 import { ToastProvider } from './components/common/Toast';
 import { ErrorBoundary } from './components/common/ErrorBoundary';
+import { LanguageProvider } from './i18n/LanguageContext';
+import { SecurityProvider } from './contexts/SecurityContext';
+import { applyDarkModeClass, getCachedDarkMode } from './utils/security';
+
+applyDarkModeClass(getCachedDarkMode());
 
 createRoot(document.getElementById('root')!).render(
   <ErrorBoundary>
     <ToastProvider>
-      <App />
+      <LanguageProvider>
+        <SecurityProvider>
+          <App />
+        </SecurityProvider>
+      </LanguageProvider>
     </ToastProvider>
   </ErrorBoundary>
 );
